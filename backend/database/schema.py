@@ -1,8 +1,10 @@
 """Database schema initialization functions"""
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from dotenv import load_dotenv
 import os
 import sys
+import time
 from pathlib import Path
 
 # Add parent directory to path to import utils
@@ -13,6 +15,35 @@ from utils.helpers import get_database_url
 
 DATABASE_URL = get_database_url()
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+
+
+def _is_deadlock_error(e):
+	"""Check if exception is a PostgreSQL deadlock error"""
+	error_str = str(e).lower()
+	return 'deadlock' in error_str or 'deadlockdetected' in error_str
+
+
+def _execute_with_retry(conn, sql, max_retries=3, base_delay=0.1):
+	"""
+	Execute SQL with retry logic for deadlocks.
+	Returns True if successful, False if failed after all retries.
+	"""
+	for attempt in range(max_retries):
+		try:
+			conn.execute(text(sql))
+			return True
+		except (OperationalError, Exception) as e:
+			if _is_deadlock_error(e):
+				if attempt < max_retries - 1:
+					delay = base_delay * (2 ** attempt)
+					time.sleep(delay)
+				else:
+					# Last attempt failed, but operations are idempotent
+					return False
+			else:
+				# Non-deadlock error, re-raise
+				raise
+	return False
 
 
 def ensure_returns_tables() -> None:
@@ -203,83 +234,80 @@ def ensure_set_updated_at_function() -> None:
 
 def ensure_support_tickets_tables() -> None:
 	"""Ensure support tickets and messages tables exist"""
+	max_retries = 3
+	for attempt in range(max_retries):
+		try:
+			with engine.begin() as conn:
+				# Create support_tickets table
+				conn.execute(text("""
+					CREATE TABLE IF NOT EXISTS support_tickets (
+						id bigserial primary key,
+						ticket_number text unique not null,
+						pharmacy_id bigint not null references pharmacies(id) on delete cascade,
+						created_by bigint not null references users(id) on delete set null,
+						assigned_to bigint references users(id) on delete set null,
+						type text not null check (type in ('support', 'feature_request', 'bug_report')),
+						subject text not null,
+						description text,
+						status text default 'open' check (status in ('open', 'in_progress', 'resolved', 'closed')),
+						priority text default 'medium' check (priority in ('low', 'medium', 'high', 'urgent')),
+						created_at timestamptz default now(),
+						updated_at timestamptz default now(),
+						resolved_at timestamptz,
+						resolved_by bigint references users(id) on delete set null,
+						closed_at timestamptz,
+						closed_by bigint references users(id) on delete set null
+					)
+				"""))
+				
+				# Create support_ticket_messages table
+				conn.execute(text("""
+					CREATE TABLE IF NOT EXISTS support_ticket_messages (
+						id bigserial primary key,
+						ticket_id bigint not null references support_tickets(id) on delete cascade,
+						user_id bigint not null references users(id) on delete set null,
+						message text not null,
+						attachments jsonb default '[]'::jsonb,
+						created_at timestamptz default now(),
+						is_internal boolean default false,
+						read_at timestamptz
+					)
+				"""))
+			break  # Success, exit retry loop
+		except (OperationalError, Exception) as e:
+			if _is_deadlock_error(e):
+				if attempt < max_retries - 1:
+					delay = 0.1 * (2 ** attempt)
+					print(f"[ensure_support_tickets_tables] Deadlock detected, retrying in {delay}s...")
+					time.sleep(delay)
+				else:
+					print(f"[ensure_support_tickets_tables] Deadlock after {max_retries} attempts, skipping (handled by another worker)")
+					return
+			else:
+				# Non-deadlock error
+				print(f"[ensure_support_tickets_tables] Error: {e}")
+				return
+	
+	# Create indexes and triggers with retry logic
 	try:
 		with engine.begin() as conn:
-			# Create support_tickets table
-			conn.execute(text("""
-				CREATE TABLE IF NOT EXISTS support_tickets (
-					id bigserial primary key,
-					ticket_number text unique not null,
-					pharmacy_id bigint not null references pharmacies(id) on delete cascade,
-					created_by bigint not null references users(id) on delete set null,
-					assigned_to bigint references users(id) on delete set null,
-					type text not null check (type in ('support', 'feature_request', 'bug_report')),
-					subject text not null,
-					description text,
-					status text default 'open' check (status in ('open', 'in_progress', 'resolved', 'closed')),
-					priority text default 'medium' check (priority in ('low', 'medium', 'high', 'urgent')),
-					created_at timestamptz default now(),
-					updated_at timestamptz default now(),
-					resolved_at timestamptz,
-					resolved_by bigint references users(id) on delete set null,
-					closed_at timestamptz,
-					closed_by bigint references users(id) on delete set null
-				)
-			"""))
+			# Create indexes - these can cause deadlocks if run concurrently
+			index_sqls = [
+				"CREATE INDEX IF NOT EXISTS idx_support_tickets_pharmacy ON support_tickets(pharmacy_id)",
+				"CREATE INDEX IF NOT EXISTS idx_support_tickets_created_by ON support_tickets(created_by)",
+				"CREATE INDEX IF NOT EXISTS idx_support_tickets_assigned_to ON support_tickets(assigned_to)",
+				"CREATE INDEX IF NOT EXISTS idx_support_tickets_status ON support_tickets(status)",
+				"CREATE INDEX IF NOT EXISTS idx_support_tickets_type ON support_tickets(type)",
+				"CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at ON support_tickets(created_at DESC)",
+				"CREATE INDEX IF NOT EXISTS idx_support_ticket_messages_ticket ON support_ticket_messages(ticket_id)",
+				"CREATE INDEX IF NOT EXISTS idx_support_ticket_messages_user ON support_ticket_messages(user_id)",
+				"CREATE INDEX IF NOT EXISTS idx_support_ticket_messages_created_at ON support_ticket_messages(created_at)"
+			]
 			
-			# Create support_ticket_messages table
-			conn.execute(text("""
-				CREATE TABLE IF NOT EXISTS support_ticket_messages (
-					id bigserial primary key,
-					ticket_id bigint not null references support_tickets(id) on delete cascade,
-					user_id bigint not null references users(id) on delete set null,
-					message text not null,
-					attachments jsonb default '[]'::jsonb,
-					created_at timestamptz default now(),
-					is_internal boolean default false,
-					read_at timestamptz
-				)
-			"""))
+			for sql in index_sqls:
+				_execute_with_retry(conn, sql)
 			
-			# Create indexes for better performance
-			conn.execute(text("""
-				CREATE INDEX IF NOT EXISTS idx_support_tickets_pharmacy 
-				ON support_tickets(pharmacy_id)
-			"""))
-			conn.execute(text("""
-				CREATE INDEX IF NOT EXISTS idx_support_tickets_created_by 
-				ON support_tickets(created_by)
-			"""))
-			conn.execute(text("""
-				CREATE INDEX IF NOT EXISTS idx_support_tickets_assigned_to 
-				ON support_tickets(assigned_to)
-			"""))
-			conn.execute(text("""
-				CREATE INDEX IF NOT EXISTS idx_support_tickets_status 
-				ON support_tickets(status)
-			"""))
-			conn.execute(text("""
-				CREATE INDEX IF NOT EXISTS idx_support_tickets_type 
-				ON support_tickets(type)
-			"""))
-			conn.execute(text("""
-				CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at 
-				ON support_tickets(created_at DESC)
-			"""))
-			conn.execute(text("""
-				CREATE INDEX IF NOT EXISTS idx_support_ticket_messages_ticket 
-				ON support_ticket_messages(ticket_id)
-			"""))
-			conn.execute(text("""
-				CREATE INDEX IF NOT EXISTS idx_support_ticket_messages_user 
-				ON support_ticket_messages(user_id)
-			"""))
-			conn.execute(text("""
-				CREATE INDEX IF NOT EXISTS idx_support_ticket_messages_created_at 
-				ON support_ticket_messages(created_at)
-			"""))
-			
-			# Create trigger function for updated_at
+			# Create trigger function (idempotent with CREATE OR REPLACE)
 			conn.execute(text("""
 				CREATE OR REPLACE FUNCTION update_support_ticket_updated_at()
 				RETURNS TRIGGER AS $$
@@ -290,71 +318,84 @@ def ensure_support_tickets_tables() -> None:
 				$$ LANGUAGE plpgsql
 			"""))
 			
-			# Create trigger for ticket messages
-			conn.execute(text("""
-				DROP TRIGGER IF EXISTS trg_support_ticket_messages_updated ON support_ticket_messages;
-				CREATE TRIGGER trg_support_ticket_messages_updated
+			# Create triggers with retry
+			trigger_sqls = [
+				"DROP TRIGGER IF EXISTS trg_support_ticket_messages_updated ON support_ticket_messages",
+				"""CREATE TRIGGER trg_support_ticket_messages_updated
 					AFTER INSERT ON support_ticket_messages
 					FOR EACH ROW
-					EXECUTE FUNCTION update_support_ticket_updated_at()
-			"""))
-			
-			# Create trigger for ticket updates
-			conn.execute(text("""
-				DROP TRIGGER IF EXISTS trg_support_tickets_updated ON support_tickets;
-				CREATE TRIGGER trg_support_tickets_updated
+					EXECUTE FUNCTION update_support_ticket_updated_at()""",
+				"DROP TRIGGER IF EXISTS trg_support_tickets_updated ON support_tickets",
+				"""CREATE TRIGGER trg_support_tickets_updated
 					BEFORE UPDATE ON support_tickets
 					FOR EACH ROW
-					EXECUTE FUNCTION set_updated_at()
-			"""))
+					EXECUTE FUNCTION set_updated_at()"""
+			]
+			
+			for sql in trigger_sqls:
+				_execute_with_retry(conn, sql)
 	except Exception as e:
-		print(f"[ensure_support_tickets_tables] Error: {e}")
+		# Non-deadlock errors are logged but don't crash
+		print(f"[ensure_support_tickets_tables] Error in indexes/triggers: {e}")
 
 
 def ensure_announcements_table() -> None:
 	"""Ensure announcements table exists"""
+	max_retries = 3
+	for attempt in range(max_retries):
+		try:
+			with engine.begin() as conn:
+				# Create announcements table
+				conn.execute(text("""
+					CREATE TABLE IF NOT EXISTS announcements (
+						id bigserial primary key,
+						title text not null,
+						content text not null,
+						type text default 'info' check (type in ('info', 'warning', 'urgent', 'update')),
+						is_pinned boolean default false,
+						is_active boolean default true,
+						created_by bigint not null references users(id) on delete set null,
+						created_at timestamptz default now(),
+						updated_at timestamptz default now(),
+						expires_at timestamptz
+					)
+				"""))
+			break  # Success, exit retry loop
+		except (OperationalError, Exception) as e:
+			if _is_deadlock_error(e):
+				if attempt < max_retries - 1:
+					delay = 0.1 * (2 ** attempt)
+					print(f"[ensure_announcements_table] Deadlock detected, retrying in {delay}s...")
+					time.sleep(delay)
+				else:
+					print(f"[ensure_announcements_table] Deadlock after {max_retries} attempts, skipping (handled by another worker)")
+					return
+			else:
+				# Non-deadlock error
+				print(f"[ensure_announcements_table] Error: {e}")
+				return
+	
+	# Create indexes and triggers with retry logic
 	try:
 		with engine.begin() as conn:
-			# Create announcements table
-			conn.execute(text("""
-				CREATE TABLE IF NOT EXISTS announcements (
-					id bigserial primary key,
-					title text not null,
-					content text not null,
-					type text default 'info' check (type in ('info', 'warning', 'urgent', 'update')),
-					is_pinned boolean default false,
-					is_active boolean default true,
-					created_by bigint not null references users(id) on delete set null,
-					created_at timestamptz default now(),
-					updated_at timestamptz default now(),
-					expires_at timestamptz
-				)
-			"""))
+			# Create indexes with retry
+			index_sqls = [
+				"CREATE INDEX IF NOT EXISTS idx_announcements_is_active ON announcements(is_active, created_at DESC)",
+				"CREATE INDEX IF NOT EXISTS idx_announcements_is_pinned ON announcements(is_pinned, created_at DESC)",
+				"CREATE INDEX IF NOT EXISTS idx_announcements_created_at ON announcements(created_at DESC)"
+			]
 			
-			# Create indexes
-			conn.execute(text("""
-				CREATE INDEX IF NOT EXISTS idx_announcements_is_active 
-				ON announcements(is_active, created_at DESC)
-			"""))
-			conn.execute(text("""
-				CREATE INDEX IF NOT EXISTS idx_announcements_is_pinned 
-				ON announcements(is_pinned, created_at DESC)
-			"""))
-			conn.execute(text("""
-				CREATE INDEX IF NOT EXISTS idx_announcements_created_at 
-				ON announcements(created_at DESC)
-			"""))
+			for sql in index_sqls:
+				_execute_with_retry(conn, sql)
 			
-			# Create trigger for updated_at
-			conn.execute(text("""
-				DROP TRIGGER IF EXISTS trg_announcements_updated ON announcements;
-				CREATE TRIGGER trg_announcements_updated
-					BEFORE UPDATE ON announcements
-					FOR EACH ROW
-					EXECUTE FUNCTION set_updated_at()
-			"""))
+			# Create trigger with retry
+			_execute_with_retry(conn, "DROP TRIGGER IF EXISTS trg_announcements_updated ON announcements")
+			_execute_with_retry(conn, """CREATE TRIGGER trg_announcements_updated
+				BEFORE UPDATE ON announcements
+				FOR EACH ROW
+				EXECUTE FUNCTION set_updated_at()""")
 	except Exception as e:
-		print(f"[ensure_announcements_table] Error: {e}")
+		print(f"[ensure_announcements_table] Error in indexes/triggers: {e}")
 
 
 def ensure_subscription_plans_table():
