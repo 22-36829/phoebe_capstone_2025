@@ -1,12 +1,15 @@
+[variables]
+PYTHON_VERSION = "3.11"
+
 [phases.setup]
 nixPkgs = ["python311"]
 
 [phases.install]
 cmds = [
-  "pip install --upgrade pip",
-  "pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r backend/requirements.txt"
+  "python3 -m pip install --upgrade pip",
+  "python3 -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r backend/requirements.txt"
 ]
 
 [start]
-cmd = "cd backend && gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
+cmd = "cd backend && python3 -m gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
 
