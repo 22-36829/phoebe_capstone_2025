@@ -1173,14 +1173,7 @@ class EnhancedAIService:
             self.brand_mappings = DEFAULT_SYNONYM_CONFIG['brand_mappings']
             self.keyword_overrides = DEFAULT_SYNONYM_CONFIG.get('keyword_overrides', {})
 
-# Global instance - initialize with error handling
-try:
-    enhanced_ai_service = EnhancedAIService()
-    logger.info("Enhanced AI service initialized successfully")
-except Exception as e:
-    logger.error(f"Failed to initialize Enhanced AI service: {e}")
-    # Create a minimal stub to prevent crashes
-    class _StubEnhancedAIService:
-        def __getattr__(self, name):
-            raise RuntimeError(f"Enhanced AI service is not available: initialization failed")
-    enhanced_ai_service = _StubEnhancedAIService()
+# Global instance - will be initialized lazily in routes
+# Don't initialize here to avoid loading SentenceTransformer at startup (memory-intensive)
+enhanced_ai_service = None
+logger.info("Enhanced AI service will be initialized on first use (lazy loading to save memory)")
