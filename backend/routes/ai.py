@@ -633,54 +633,112 @@ def chat():
         
         elif intent == 'location_query':
             # Product locator
-            # Extract product name using training service
-            product_name = ai_training.extract_medicine_name(message, intent)
+            try:
+                product_name = ai_training.extract_medicine_name(message, intent)
+            except Exception as e:
+                logger.warning(f"Medicine name extraction failed: {e}")
+                product_name = message
             
-            locations = ai_service.locate_product(product_name, pharmacy_id)
+            try:
+                locations = ai_service.locate_product(product_name, pharmacy_id) if ai_service else []
+            except Exception as e:
+                logger.error(f"Error locating product: {e}")
+                locations = []
             
-            # Use conversational AI for natural response
-            response = conversational_ai.get_conversational_response(
-                intent, locations, message, product_name=product_name
-            )
+            try:
+                response = conversational_ai.get_conversational_response(
+                    intent, locations, message, product_name=product_name
+                )
+            except Exception as e:
+                logger.error(f"Error getting conversational response: {e}")
+                response = {
+                    'message': f"I found {len(locations)} location(s) for {product_name}." if locations else f"Sorry, I couldn't find {product_name} in the inventory.",
+                    'intent': intent
+                }
         
         elif intent == 'medical_info_query':
             # Medical information
-            # Extract medicine name using training service
-            medicine_name = ai_training.extract_medicine_name(message, intent)
+            try:
+                medicine_name = ai_training.extract_medicine_name(message, intent)
+                # Try fuzzy matching to correct medicine name
+                if medicine_name:
+                    try:
+                        corrected_name = fuzzy_matcher.suggest_correction(medicine_name)
+                        if corrected_name:
+                            medicine_name = corrected_name
+                    except Exception as e:
+                        logger.warning(f"Fuzzy matching failed: {e}")
+            except Exception as e:
+                logger.warning(f"Medicine name extraction failed: {e}")
+                medicine_name = message
             
-            # Try fuzzy matching to correct medicine name
-            if medicine_name:
-                corrected_name = fuzzy_matcher.suggest_correction(medicine_name)
-                if corrected_name:
-                    medicine_name = corrected_name
+            try:
+                medical_info = ai_service.get_medical_info(medicine_name) if ai_service else {}
+            except Exception as e:
+                logger.error(f"Error getting medical info: {e}")
+                medical_info = {
+                    'name': medicine_name,
+                    'description': 'Information not available. Please consult your pharmacist.',
+                    'uses': ['Consult your pharmacist'],
+                    'side_effects': ['Consult your healthcare provider'],
+                    'source': 'Service unavailable'
+                }
             
-            medical_info = ai_service.get_medical_info(medicine_name)
-            
-            # Use conversational AI for natural response
-            response = conversational_ai.get_conversational_response(
-                intent, medical_info, message, medicine_name=medicine_name
-            )
+            try:
+                response = conversational_ai.get_conversational_response(
+                    intent, medical_info, message, medicine_name=medicine_name
+                )
+            except Exception as e:
+                logger.error(f"Error getting conversational response: {e}")
+                response = {
+                    'message': f"Here's what I found about {medicine_name}: {medical_info.get('description', 'Information not available')}",
+                    'intent': intent
+                }
         
         elif intent == 'recommendation_query':
             # Product recommendations
-            # Extract query using training service
-            query = ai_training.extract_medicine_name(message, 'recommendation_query')
+            try:
+                query = ai_training.extract_medicine_name(message, 'recommendation_query')
+            except Exception as e:
+                logger.warning(f"Query extraction failed: {e}")
+                query = message
             
-            recommendations = ai_service.get_recommendations(query, pharmacy_id)
+            try:
+                recommendations = ai_service.get_recommendations(query, pharmacy_id) if ai_service else []
+            except Exception as e:
+                logger.error(f"Error getting recommendations: {e}")
+                recommendations = []
             
-            # Use conversational AI for natural response
-            response = conversational_ai.get_conversational_response(
-                intent, recommendations, message
-            )
+            try:
+                response = conversational_ai.get_conversational_response(
+                    intent, recommendations, message
+                )
+            except Exception as e:
+                logger.error(f"Error getting conversational response: {e}")
+                response = {
+                    'message': f"I found {len(recommendations)} recommendation(s) for {query}." if recommendations else f"Sorry, I couldn't find recommendations for {query}.",
+                    'intent': intent
+                }
         
         else:
             # Use conversational AI for general response
-            response = conversational_ai.get_conversational_response(
-                intent, [], message
-            )
+            try:
+                response = conversational_ai.get_conversational_response(
+                    intent, [], message
+                )
+            except Exception as e:
+                logger.error(f"Error getting conversational response: {e}")
+                response = {
+                    'message': 'I apologize, but I encountered an error processing your message. Please try again or rephrase your question.',
+                    'intent': intent
+                }
         
         # Enhance response with additional helpful information
-        enhanced_response = conversational_ai.enhance_response(response, message, intent)
+        try:
+            enhanced_response = conversational_ai.enhance_response(response, message, intent)
+        except Exception as e:
+            logger.warning(f"Error enhancing response: {e}, using original response")
+            enhanced_response = response if isinstance(response, dict) else {'message': str(response)}
         
         return jsonify({
             'success': True,
@@ -688,10 +746,16 @@ def chat():
         })
         
     except Exception as e:
-        logger.error(f"Error in chat endpoint: {str(e)}")
+        logger.error(f"Error in chat endpoint: {str(e)}", exc_info=True)
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({
             'success': False,
-            'error': 'An error occurred while processing your request'
+            'error': f'An error occurred while processing your request: {str(e)}',
+            'response': {
+                'message': 'I apologize, but I encountered an error. Please try again or rephrase your question.',
+                'intent': 'error'
+            }
         }), 500
 
 @ai_bp.route('/chat/advanced', methods=['POST'])
