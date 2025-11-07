@@ -947,7 +947,23 @@ class EnhancedAIService:
 
     def generate_chat_response(self, query: str, show_limit: Optional[int] = None) -> Dict[str, Any]:
         """Generate a chat response for the query with structured data output"""
-        search_results = self.search_medicines(query)
+        try:
+            search_results = self.search_medicines(query)
+        except Exception as e:
+            logger.error(f"Error in search_medicines: {e}", exc_info=True)
+            # Return a safe fallback response
+            return {
+                'message': f"I apologize, but I encountered an error while searching for '{query}'. Please try again or rephrase your question.",
+                'type': 'error',
+                'data': [],
+                'total_matches': 0,
+                'enhanced_mode': False,
+                'confidence': 0.0,
+                'search_analysis': {
+                    'original_query': query,
+                    'error': str(e)
+                }
+            }
         total_matches = search_results['total_matches']
         detected_categories = search_results.get('detected_categories', [])
         query_lower = query.lower()
@@ -1047,7 +1063,12 @@ class EnhancedAIService:
             }
 
         # No matches found — craft informative response
-        query_categories = self.classify_query(query)
+        try:
+            query_categories = self.classify_query(query)
+        except Exception as e:
+            logger.warning(f"Error classifying query: {e}")
+            query_categories = []
+        
         message_lines = []
         fallback_results: List[Dict[str, Any]] = []
 
@@ -1138,6 +1159,46 @@ class EnhancedAIService:
                 'suggestion': "Try refining your query with more specific medicine details"
             }
         }
+        except Exception as e:
+            # Final safety net - if anything fails, return a safe response
+            logger.error(f"Error in generate_chat_response: {e}", exc_info=True)
+            return {
+                'message': f"I apologize, but I encountered an error while processing your query '{query}'. Please try again or rephrase your question.",
+                'type': 'error',
+                'data': [],
+                'total_matches': 0,
+                'enhanced_mode': False,
+                'confidence': 0.0,
+                'search_analysis': {
+                    'original_query': query,
+                    'error': str(e)
+                },
+                'pagination': {
+                    'showing': 0,
+                    'total': 0,
+                    'remaining': 0
+                }
+            }
+        except Exception as e:
+            # Final safety net - if anything fails, return a safe response
+            logger.error(f"Error in generate_chat_response: {e}", exc_info=True)
+            return {
+                'message': f"I apologize, but I encountered an error while processing your query '{query}'. Please try again or rephrase your question.",
+                'type': 'error',
+                'data': [],
+                'total_matches': 0,
+                'enhanced_mode': False,
+                'confidence': 0.0,
+                'search_analysis': {
+                    'original_query': query,
+                    'error': str(e)
+                },
+                'pagination': {
+                    'showing': 0,
+                    'total': 0,
+                    'remaining': 0
+                }
+            }
 
     def _load_synonym_config(self, force: bool = False) -> None:
         try:

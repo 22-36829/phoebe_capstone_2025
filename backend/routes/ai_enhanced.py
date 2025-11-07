@@ -295,11 +295,29 @@ def enhanced_ai_chat():
         })
         
     except Exception as e:
-        logger.error(f"Error in enhanced chat: {str(e)}")
+        logger.error(f"Error in enhanced chat: {str(e)}", exc_info=True)
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        # Return a safe response instead of error
         return jsonify({
-            'success': False,
-            'error': f'Enhanced chat failed: {str(e)}'
-        }), 500
+            'success': True,
+            'response': {
+                'message': f"I apologize, but I encountered an error: {str(e)}. Please try again or rephrase your question.",
+                'type': 'error',
+                'data': [],
+                'total_matches': 0,
+                'enhanced_mode': False,
+                'confidence': 0.0,
+                'search_analysis': {
+                    'error': str(e)
+                },
+                'pagination': {
+                    'showing': 0,
+                    'total': 0,
+                    'remaining': 0
+                }
+            }
+        }), 200  # Return 200 so frontend doesn't treat it as an error
 
 
 @ai_enhanced_bp.route('/refresh-cache', methods=['POST'])
