@@ -24,6 +24,7 @@ const AIAssistant = () => {
   ]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
   const [expandedSections, setExpandedSections] = useState({});
   const [lastSearchMessage, setLastSearchMessage] = useState('');
   const [showInfoModal, setShowInfoModal] = useState(false);

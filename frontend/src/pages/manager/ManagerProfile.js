@@ -5,6 +5,7 @@ import { ManagerAPI } from '../../services/api';
 
 const ManagerProfile = () => {
   const { token, user } = useAuth();
+  const [showPassword, setShowPassword] = useState(false);
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',
