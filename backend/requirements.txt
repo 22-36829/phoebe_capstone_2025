@@ -28,14 +28,13 @@ textblob>=0.17.1
 statsmodels>=0.14.0
 prophet>=1.1.5
 
-# AI/ML packages - OPTIONAL (can add later)
-# These make the build 10x slower but add AI features
-# Uncomment to enable:
-# --extra-index-url https://download.pytorch.org/whl/cpu
-# torch>=2.0.0,<3.0.0
-# sentence-transformers>=2.2.2
-# transformers>=4.35.0
-# faiss-cpu>=1.7.4
+# AI/ML packages - REQUIRED for AI Assistant
+# CPU-only versions to reduce image size
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0,<3.0.0
+sentence-transformers>=2.2.2
+transformers>=4.35.0
+faiss-cpu>=1.7.4
 
 # Completely optional (not needed for basic API)
 # spacy>=3.7.0
