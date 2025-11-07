@@ -84,11 +84,12 @@ def build_semantic_index():
             }), 503
         
         # Use database instead of CSV - refresh the AI service inventory
-        enhanced_ai_service.refresh_inventory(force=True)
-        
-        # Get medicine count from the refreshed service
         service = _get_enhanced_ai_service()
-        medicine_count = len(service.medicine_database) if service and hasattr(service, 'medicine_database') else 0
+        if service:
+            service.refresh_inventory(force=True)
+            medicine_count = len(service.medicine_database) if hasattr(service, 'medicine_database') else 0
+        else:
+            medicine_count = 0
         
         return jsonify({
             'success': True,
