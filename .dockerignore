@@ -1,0 +1,64 @@
+# Frontend (not needed for backend)
+frontend/
+
+# AI Models (will be auto-generated)
+backend/ai_models/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+env/
+venv/
+ENV/
+.venv/
+
+# Node modules
+node_modules/
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+
+# Documentation
+*.md
+!README.md
+
+# Scripts
+scripts/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Git
+.git/
+.gitignore
+
+# Large files
+*.pkl
+*.joblib
+*.npy
+*.model
+
+# Test files
+test_*.py
+*_test.py
+debug_*.py
+
