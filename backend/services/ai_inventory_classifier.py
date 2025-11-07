@@ -13,7 +13,11 @@ import logging
 from datetime import datetime
 
 # Import ultra-advanced AI components
-from ultra_advanced_ai import ultra_advanced_ai
+try:
+    from .ultra_advanced_ai import ultra_advanced_ai
+except ImportError:
+    # Fallback for when ultra_advanced_ai is not available (optional dependency)
+    ultra_advanced_ai = None
 
 logger = logging.getLogger(__name__)
 
@@ -219,22 +223,43 @@ class AIInventoryManager:
         # Build semantic search index
         self.medicine_database = {med['name'].lower(): med for med in all_medicines}
         
-        # Use ultra-advanced AI to build semantic index
-        ultra_advanced_ai.semantic_search.build_product_index(all_medicines)
+        # Use ultra-advanced AI to build semantic index (if available)
+        if ultra_advanced_ai and hasattr(ultra_advanced_ai, 'semantic_search'):
+            try:
+                ultra_advanced_ai.semantic_search.build_product_index(all_medicines)
+            except Exception as e:
+                logging.warning(f"Could not build semantic index: {e}")
         
         return all_medicines
     
     def search_medicine_semantic(self, query: str, limit: int = 10) -> List[Dict]:
         """Search medicines using semantic search"""
-        # Use ultra-advanced AI semantic search
-        results = ultra_advanced_ai.semantic_search.semantic_search(query, top_k=limit)
+        # Use ultra-advanced AI semantic search (if available)
+        if ultra_advanced_ai and hasattr(ultra_advanced_ai, 'semantic_search'):
+            try:
+                results = ultra_advanced_ai.semantic_search.semantic_search(query, top_k=limit)
+            except Exception as e:
+                logging.warning(f"Semantic search failed: {e}, falling back to basic search")
+                results = []
+        else:
+            results = []
         
         enhanced_results = []
-        for product, score in results:
-            enhanced_product = product.copy()
-            enhanced_product['semantic_score'] = score
-            enhanced_product['ai_classification'] = self.classifier.get_medicine_info(product['name'])
-            enhanced_results.append(enhanced_product)
+        if results:
+            for result in results:
+                # Handle both tuple (product, score) and dict formats
+                if isinstance(result, tuple) and len(result) == 2:
+                    product, score = result
+                elif isinstance(result, dict):
+                    product = result
+                    score = result.get('score', 0.0)
+                else:
+                    continue
+                    
+                enhanced_product = product.copy() if isinstance(product, dict) else dict(product)
+                enhanced_product['semantic_score'] = score
+                enhanced_product['ai_classification'] = self.classifier.get_medicine_info(enhanced_product.get('name', ''))
+                enhanced_results.append(enhanced_product)
         
         return enhanced_results
     
