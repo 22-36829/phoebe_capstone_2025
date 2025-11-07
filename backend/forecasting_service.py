@@ -33,7 +33,10 @@ class ForecastingService:
     """Simplified forecasting service with multi-model comparison"""
 
     def __init__(self, db_connection_string: Optional[str] = None) -> None:
-        self.db_connection_string = db_connection_string or os.getenv('DATABASE_URL')
+        if db_connection_string is None:
+            from utils.helpers import get_database_url
+            db_connection_string = get_database_url()
+        self.db_connection_string = db_connection_string
         self.engine: Optional[Engine] = (
             create_engine(self.db_connection_string)
             if self.db_connection_string

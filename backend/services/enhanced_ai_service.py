@@ -162,7 +162,8 @@ class EnhancedAIService:
         
         # Database connection for live data
         if use_database:
-            self.database_url = os.getenv('DATABASE_URL', 'postgresql+psycopg2://postgres:PhoebeDrugStore01@db.xybuirzvlfuwmtcokkwm.supabase.co:5432/postgres?sslmode=require')
+            from utils.helpers import get_database_url
+            self.database_url = get_database_url()
             self.engine = create_engine(self.database_url, pool_pre_ping=True)
         self.category_mappings: Dict[str, List[str]] = {}
         self.brand_mappings: Dict[str, str] = {}

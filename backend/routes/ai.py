@@ -24,6 +24,13 @@ from services.ai_metrics import record_feedback as record_feedback_metric
 
 load_dotenv()
 
+import sys
+from pathlib import Path
+
+# Add parent directory to path to import utils
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from utils.helpers import get_database_url
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,7 +38,7 @@ logger = logging.getLogger(__name__)
 ai_bp = Blueprint('ai', __name__, url_prefix='/api/ai')
 
 # Database connection
-DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql+psycopg2://postgres:PhoebeDrugStore01@db.xybuirzvlfuwmtcokkwm.supabase.co:5432/postgres?sslmode=require')
+DATABASE_URL = get_database_url()
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 # Cache for medical information (in production, use Redis)

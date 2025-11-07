@@ -2,9 +2,16 @@
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 import os
+import sys
+from pathlib import Path
+
+# Add parent directory to path to import utils
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 load_dotenv()
-DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql+psycopg2://postgres:PhoebeDrugStore01@db.xybuirzvlfuwmtcokkwm.supabase.co:5432/postgres?sslmode=require')
+from utils.helpers import get_database_url
+
+DATABASE_URL = get_database_url()
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 

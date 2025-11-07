@@ -5,10 +5,10 @@ from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 import bcrypt
 import os
-from utils.helpers import get_current_user, require_manager_or_admin
+from utils.helpers import get_current_user, require_manager_or_admin, get_database_url
 
 load_dotenv()
-DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql+psycopg2://postgres:PhoebeDrugStore01@db.xybuirzvlfuwmtcokkwm.supabase.co:5432/postgres?sslmode=require')
+DATABASE_URL = get_database_url()
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 staff_bp = Blueprint('staff', __name__, url_prefix='/api/manager/staff')

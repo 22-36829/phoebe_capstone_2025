@@ -2,6 +2,8 @@
 from flask import request, abort
 from sqlalchemy import text
 from datetime import datetime, timedelta
+import os
+from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 
 
 def get_current_user(conn, user_id: str):
@@ -28,4 +30,40 @@ def date_range_params():
 	else:
 		from_dt = to_dt - timedelta(days=30)
 	return from_dt, to_dt
+
+
+def get_database_url():
+	"""
+	Get DATABASE_URL from environment and sanitize it by removing invalid parameters.
+	
+	Removes 'pgbouncer' parameter which is not recognized by psycopg2.
+	pgbouncer is handled automatically when connecting through the pooler port.
+	"""
+	default_url = 'postgresql+psycopg2://postgres:PhoebeDrugStore01@db.xybuirzvlfuwmtcokkwm.supabase.co:5432/postgres?sslmode=require'
+	db_url = os.getenv('DATABASE_URL', default_url)
+	
+	# Parse the URL
+	parsed = urlparse(db_url)
+	
+	# Parse query parameters
+	query_params = parse_qs(parsed.query)
+	
+	# Remove pgbouncer parameter if present (psycopg2 doesn't recognize it)
+	if 'pgbouncer' in query_params:
+		del query_params['pgbouncer']
+	
+	# Rebuild query string
+	new_query = urlencode(query_params, doseq=True)
+	
+	# Reconstruct URL
+	sanitized_url = urlunparse((
+		parsed.scheme,
+		parsed.netloc,
+		parsed.path,
+		parsed.params,
+		new_query,
+		parsed.fragment
+	))
+	
+	return sanitized_url
 

@@ -13,7 +13,14 @@ from datetime import datetime
 
 load_dotenv()
 
-DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql+psycopg2://postgres:PhoebeDrugStore01@db.xybuirzvlfuwmtcokkwm.supabase.co:5432/postgres?sslmode=require')
+import sys
+from pathlib import Path
+
+# Add parent directory to path to import utils
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from utils.helpers import get_database_url
+
+DATABASE_URL = get_database_url()
 
 def get_products_for_pharmacy(engine, pharmacy_id, limit=50):
     """Get active products for a pharmacy (sorted by sales, limited)"""

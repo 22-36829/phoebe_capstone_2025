@@ -2,10 +2,11 @@
 
 ## 📋 YOUR ACTUAL CONFIGURATION
 
-### Database Connection (Supabase)
+### Database Connection (Supabase Pooler)
 ```
-DATABASE_URL=postgresql+psycopg2://postgres:PhoebeDrugStore01@db.xybuirzvlfuwmtcokkwm.supabase.co:5432/postgres?sslmode=require
+DATABASE_URL=postgresql+psycopg2://postgres.xybuirzvlfuwmtcokkwm:PhoebeDrugStore01@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true
 ```
+**Note:** The `pgbouncer=true` parameter is automatically removed by the application code before connecting.
 
 ### Current Default Values
 - **JWT_SECRET_KEY**: `dev-secret` (⚠️ CHANGE THIS!)
@@ -39,8 +40,9 @@ DATABASE_URL=postgresql+psycopg2://postgres:PhoebeDrugStore01@db.xybuirzvlfuwmtc
 Go to **Variables** tab and add these EXACT values:
 
 ```
-DATABASE_URL=postgresql+psycopg2://postgres:PhoebeDrugStore01@db.xybuirzvlfuwmtcokkwm.supabase.co:5432/postgres?sslmode=require
+DATABASE_URL=postgresql+psycopg2://postgres.xybuirzvlfuwmtcokkwm:PhoebeDrugStore01@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true
 ```
+**Note:** The application automatically removes the `pgbouncer=true` parameter before connecting.
 
 **Use these ready-generated secrets** (already created for you):
 

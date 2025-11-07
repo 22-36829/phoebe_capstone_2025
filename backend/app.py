@@ -8,10 +8,11 @@ from sqlalchemy.engine import Engine
 from dotenv import load_dotenv
 from flask_jwt_extended import JWTManager
 import bcrypt
+from utils.helpers import get_database_url
 
 load_dotenv()
 
-DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql+psycopg2://postgres:PhoebeDrugStore01@db.xybuirzvlfuwmtcokkwm.supabase.co:5432/postgres?sslmode=require')
+DATABASE_URL = get_database_url()
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=False, expose_headers=["Authorization"], allow_headers=["Content-Type", "Authorization"], methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"]) 
@@ -151,11 +152,36 @@ def seed_demo_accounts() -> None:
         import traceback
         traceback.print_exc()
 
+@app.get('/')
+def root():
+	"""Root endpoint - simple health check without database"""
+	return jsonify({ 
+		'service': 'Phoebe Pharmacy Management API',
+		'status': 'running',
+		'version': '1.0.0',
+		'endpoints': {
+			'health': '/api/health',
+			'auth': '/api/auth/login',
+			'docs': 'See API documentation'
+		}
+	})
+
 @app.get('/api/health')
 def health():
-	with engine.connect() as conn:
-		ok = conn.execute(text('select 1')).scalar() == 1
-	return jsonify({ 'status': 'ok' if ok else 'down' })
+	"""Health check endpoint - includes database connection status"""
+	try:
+		with engine.connect() as conn:
+			ok = conn.execute(text('select 1')).scalar() == 1
+		return jsonify({ 
+			'status': 'ok' if ok else 'down',
+			'database': 'connected' if ok else 'disconnected'
+		})
+	except Exception as e:
+		return jsonify({ 
+			'status': 'partial',
+			'database': 'disconnected',
+			'error': str(e)
+		}), 503
 
 # Handle favicon requests to prevent 404 errors
 @app.get('/favicon.ico')
