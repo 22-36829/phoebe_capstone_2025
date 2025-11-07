@@ -18,13 +18,31 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 # Model imports
 from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+# Suppress plotly import warnings from Prophet
+import sys
+import io
+
+# Capture stderr during Prophet import to suppress plotly warnings
+_old_stderr = sys.stderr
+sys.stderr = io.StringIO()
 try:
-    from prophet import Prophet
-except ImportError:
     try:
-        from fbprophet import Prophet
+        from prophet import Prophet
     except ImportError:
-        Prophet = None
+        try:
+            from fbprophet import Prophet
+        except ImportError:
+            Prophet = None
+except Exception:
+    Prophet = None
+finally:
+    # Restore stderr and discard plotly warnings
+    _prophet_stderr = sys.stderr.getvalue()
+    sys.stderr = _old_stderr
+    # Only print if it's not the plotly warning
+    if _prophet_stderr and 'plotly' not in _prophet_stderr.lower():
+        print(_prophet_stderr, file=sys.stderr, end='')
 
 warnings.filterwarnings('ignore')
 
