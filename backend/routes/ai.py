@@ -49,7 +49,10 @@ class AIAssistantService:
         self.vectorizer = None
         self.product_vectors = None
         self.product_data = None
-        self.load_models()
+        self._models_loaded = False
+        self._load_lock = False  # Simple lock to prevent concurrent loading
+        # Don't load models immediately - load lazily on first use
+        logger.info("AI service initialized (models will load on first request)")
     
     def load_models(self):
         """Load or initialize recommendation models"""
@@ -152,8 +155,24 @@ class AIAssistantService:
         except Exception as e:
             logger.error(f"Error training models: {str(e)}")
     
+    def _ensure_models_loaded(self):
+        """Lazy load models on first use"""
+        if not self._models_loaded and not self._load_lock:
+            self._load_lock = True
+            try:
+                logger.info("Lazy loading AI models...")
+                self.load_models()
+                self._models_loaded = True
+                logger.info("AI models loaded successfully")
+            except Exception as e:
+                logger.error(f"Error loading models: {e}")
+                self._models_loaded = False
+            finally:
+                self._load_lock = False
+    
     def get_recommendations(self, query, pharmacy_id, limit=5):
         """Get product recommendations based on query with fuzzy matching"""
+        self._ensure_models_loaded()
         try:
             # First try fuzzy matching for medicine names
             if any(word in query.lower() for word in ['paracetamol', 'biogesic', 'aspirin', 'ibuprofen', 'tempra', 'amoxicillin']):
@@ -273,6 +292,7 @@ class AIAssistantService:
     
     def locate_product(self, product_name, pharmacy_id):
         """Find product location and availability with fuzzy matching"""
+        self._ensure_models_loaded()
         try:
             # First try fuzzy matching
             fuzzy_results = fuzzy_matcher.fuzzy_search_products(product_name, pharmacy_id, limit=5)
@@ -517,11 +537,11 @@ class AIAssistantService:
                 'source': 'Local database'
             }
 
-# Initialize AI service with error handling
+# Initialize AI service with error handling - lazy loading
 ai_service = None
 try:
     ai_service = AIAssistantService()
-    logger.info("AI service initialized successfully")
+    logger.info("AI service initialized (lazy loading enabled)")
 except Exception as e:
     logger.error(f"Failed to initialize AI service: {e}. AI features may be limited.")
     # Create a minimal service that won't crash the app
