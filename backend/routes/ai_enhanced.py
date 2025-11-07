@@ -11,15 +11,33 @@ from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 import logging
 
-# Import AI services
-from services.ultra_advanced_ai import ultra_advanced_ai
-from services.ai_inventory_classifier import ai_inventory_manager
-from services.enhanced_ai_service import enhanced_ai_service
-load_dotenv()
-
-# Configure logging
+# Configure logging first
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+load_dotenv()
+
+# Import AI services with graceful fallbacks
+try:
+    from services.ultra_advanced_ai import ultra_advanced_ai
+    logger.info("ultra_advanced_ai imported successfully")
+except (ImportError, Exception) as e:
+    logger.warning(f"Could not import ultra_advanced_ai: {e}. Advanced features will be limited.")
+    ultra_advanced_ai = None
+
+try:
+    from services.ai_inventory_classifier import ai_inventory_manager
+    logger.info("ai_inventory_classifier imported successfully")
+except (ImportError, Exception) as e:
+    logger.warning(f"Could not import ai_inventory_classifier: {e}. Using fallback.")
+    ai_inventory_manager = None
+
+try:
+    from services.enhanced_ai_service import enhanced_ai_service
+    logger.info("enhanced_ai_service imported successfully")
+except (ImportError, Exception) as e:
+    logger.error(f"Could not import enhanced_ai_service: {e}. This is required!")
+    enhanced_ai_service = None
 
 from services.ai_metrics import (
     flush_metrics,
@@ -59,6 +77,12 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 def build_semantic_index():
     """Build semantic search index from database (CSV mode deprecated)"""
     try:
+        if not enhanced_ai_service:
+            return jsonify({
+                'success': False,
+                'error': 'Enhanced AI service is not available'
+            }), 503
+        
         # Use database instead of CSV - refresh the AI service inventory
         enhanced_ai_service.refresh_inventory(force=True)
         
@@ -83,6 +107,12 @@ def build_semantic_index():
 def enhanced_medicine_search():
     """Enhanced medicine search with multiple strategies"""
     try:
+        if not ai_inventory_manager:
+            return jsonify({
+                'success': False,
+                'error': 'AI inventory manager is not available'
+            }), 503
+            
         data = request.get_json()
         query = data.get('query', '').strip()
         limit = data.get('limit', 10)
@@ -129,6 +159,12 @@ def enhanced_medicine_search():
 def get_medicine_recommendations():
     """Get AI-powered medicine recommendations"""
     try:
+        if not ai_inventory_manager:
+            return jsonify({
+                'success': False,
+                'error': 'AI inventory manager is not available'
+            }), 503
+            
         data = request.get_json()
         condition = data.get('condition', '').strip()
         
@@ -174,6 +210,12 @@ def get_medicine_recommendations():
 def classify_medicine():
     """Classify a medicine using AI"""
     try:
+        if not ai_inventory_manager:
+            return jsonify({
+                'success': False,
+                'error': 'AI inventory manager is not available'
+            }), 503
+            
         data = request.get_json()
         medicine_name = data.get('medicine_name', '').strip()
         
@@ -203,6 +245,12 @@ def classify_medicine():
 def enhanced_ai_chat():
     """Enhanced AI chat with inventory integration"""
     try:
+        if not enhanced_ai_service:
+            return jsonify({
+                'success': False,
+                'error': 'Enhanced AI service is not available'
+            }), 503
+            
         data = request.get_json()
         message = data.get('message', '').strip()
         user_id = data.get('user_id', 'anonymous')
@@ -242,6 +290,12 @@ def enhanced_ai_chat():
 def refresh_inventory_cache():
     """Manually refresh the AI inventory cache"""
     try:
+        if not enhanced_ai_service:
+            return jsonify({
+                'success': False,
+                'error': 'Enhanced AI service is not available'
+            }), 503
+            
         auth_error = _require_service_token()
         if auth_error is not None:
             return auth_error
@@ -282,6 +336,12 @@ def flush_ai_metrics():
 def get_medicine_categories():
     """Get all available medicine categories"""
     try:
+        if not ai_inventory_manager:
+            return jsonify({
+                'success': False,
+                'error': 'AI inventory manager is not available'
+            }), 503
+            
         categories = list(ai_inventory_manager.classifier.medicine_categories.keys())
         
         return jsonify({
@@ -301,6 +361,12 @@ def get_medicine_categories():
 def get_inventory_stats():
     """Get inventory statistics"""
     try:
+        if not ai_inventory_manager:
+            return jsonify({
+                'success': False,
+                'error': 'AI inventory manager is not available'
+            }), 503
+            
         if not ai_inventory_manager.medicine_database:
             return jsonify({
                 'success': False,
