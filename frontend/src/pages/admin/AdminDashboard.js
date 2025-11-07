@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Building2, Users, CreditCard, MessageSquare, TrendingUp, CheckCircle2, Clock, AlertCircle, Bell, Package, DollarSign, Loader2, ArrowRight } from 'lucide-react';
+import { Building2, Users, CreditCard, MessageSquare, TrendingUp, AlertCircle, Bell, Loader2, ArrowRight } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { AdminAPI, SupportAPI, AnnouncementsAPI } from '../../services/api';
 
@@ -51,7 +51,6 @@ const AdminDashboard = () => {
         
         // Calculate user stats
         const users = usersRes?.success ? usersRes.users || [] : [];
-        const activeUsers = users.filter(u => u.is_active).length;
         
         // Calculate subscription stats
         const subscriptions = subscriptionsRes?.success ? subscriptionsRes.subscriptions || [] : [];
@@ -109,7 +108,7 @@ const AdminDashboard = () => {
       if (!token) return;
       try {
         setLoadingHeavy(true);
-        const [ticketsRes, ticketsStatsRes, announcementsRes] = await Promise.all([
+        const [ticketsRes, , announcementsRes] = await Promise.all([
           SupportAPI.listTickets({ status: 'all', page: 1, per_page: 10 }, token).catch(() => null), // Limit tickets
           SupportAPI.getStats(token).catch(() => null),
           AnnouncementsAPI.list({ page: 1, per_page: 5 }, token).catch(() => null),

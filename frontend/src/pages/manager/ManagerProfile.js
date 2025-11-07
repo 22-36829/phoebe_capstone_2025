@@ -1,11 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { User, Mail, Phone, MapPin, Camera, Save, Eye, EyeOff, Building2, Trash2, Edit3, Shield } from 'lucide-react';
+import { Mail, Phone, MapPin, Camera, Building2, Trash2, Edit3, Shield } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { ManagerAPI } from '../../services/api';
 
 const ManagerProfile = () => {
   const { token, user } = useAuth();
-  const [showPassword, setShowPassword] = useState(false);
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',

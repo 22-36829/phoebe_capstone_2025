@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { MessageSquare, Plus, Search, Filter, AlertCircle, Bug, Lightbulb, HelpCircle, Clock, CheckCircle, XCircle, Send, Trash2, Lock } from 'lucide-react';
+import { MessageSquare, Plus, Search, AlertCircle, Bug, Lightbulb, HelpCircle, Clock, CheckCircle, XCircle, Send, Trash2, Lock } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { SupportAPI } from '../../services/api';
 

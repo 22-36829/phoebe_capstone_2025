@@ -5,17 +5,11 @@ import {
   Plus, 
   Minus, 
   Trash2, 
-  CreditCard, 
-  Banknote, 
-  Smartphone,
   Printer,
   X,
   Package,
   AlertTriangle,
   CheckCircle,
-  Clock,
-  DollarSign,
-  User,
   Receipt,
   History
 } from 'lucide-react';

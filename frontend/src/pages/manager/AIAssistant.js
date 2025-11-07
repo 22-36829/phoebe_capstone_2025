@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   Bot,
   Send,
-  Loader2,
   Search,
   Package,
   MapPin,
@@ -25,7 +24,6 @@ const AIAssistant = () => {
   ]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isTyping, setIsTyping] = useState(false);
   const [expandedSections, setExpandedSections] = useState({});
   const [lastSearchMessage, setLastSearchMessage] = useState('');
   const [showInfoModal, setShowInfoModal] = useState(false);
@@ -178,6 +176,7 @@ const AIAssistant = () => {
     }
   };
 
+  // eslint-disable-next-line no-unused-vars
   const handleFeedback = async (messageId, feedback) => {
     try {
       const message = messages.find(m => m.id === messageId);
@@ -210,6 +209,7 @@ const AIAssistant = () => {
     }
   };
 
+  // eslint-disable-next-line no-unused-vars
   const handleSuggestionClick = (suggestion) => {
     setInputMessage(suggestion.text);
   };
