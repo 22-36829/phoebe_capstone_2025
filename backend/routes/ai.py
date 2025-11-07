@@ -13,22 +13,21 @@ from sklearn.metrics.pairwise import cosine_similarity
 import pickle
 import logging
 import sys
-sys.path.append('services')
-from fuzzy_matcher import fuzzy_matcher
-from ai_training import ai_training
-from conversational_ai import conversational_ai
-from advanced_conversational_ai import advanced_conversational_ai
-from advanced_intent_classifier import advanced_intent_classifier
-from ultra_advanced_ai import ultra_advanced_ai
-from services.ai_metrics import record_feedback as record_feedback_metric
+from pathlib import Path
 
 load_dotenv()
 
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import utils
+# Add parent directory to path to import utils and services
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Import AI services with correct paths
+from services.fuzzy_matcher import fuzzy_matcher
+from services.ai_training import ai_training
+from services.conversational_ai import conversational_ai
+from services.advanced_conversational_ai import advanced_conversational_ai
+from services.advanced_intent_classifier import advanced_intent_classifier
+from services.ultra_advanced_ai import ultra_advanced_ai
+from services.ai_metrics import record_feedback as record_feedback_metric
 from utils.helpers import get_database_url
 
 # Configure logging
