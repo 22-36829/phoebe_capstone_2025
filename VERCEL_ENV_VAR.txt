@@ -1,0 +1,8 @@
+# Copy this into Vercel Environment Variables
+# Replace YOUR_RAILWAY_URL with your actual Railway backend URL
+
+REACT_APP_API_BASE=https://YOUR_RAILWAY_URL.railway.app
+
+# Example:
+# REACT_APP_API_BASE=https://phoebe-backend-production.up.railway.app
+

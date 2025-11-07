@@ -1,0 +1,12 @@
+# Copy these EXACT values into Railway Environment Variables
+
+DATABASE_URL=postgresql+psycopg2://postgres:PhoebeDrugStore01@db.xybuirzvlfuwmtcokkwm.supabase.co:5432/postgres?sslmode=require
+
+JWT_SECRET_KEY=69kdsyb6CUVLdTsUsQ0dsqK-DiTPSvhrbqtTucGpVA0
+
+APP_SECRET_KEY=XO5neDCr5RG9OLHuY2zjHGujZ1ypCf15xjUqXDlamBQ
+
+FLASK_DEBUG=0
+
+PORT=5000
+

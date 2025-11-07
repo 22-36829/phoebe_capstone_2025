@@ -1,0 +1,17 @@
+{
+  "short_name": "Phoebe Drugstore",
+  "name": "Phoebe Drugstore - Pharmacy Management System",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#2563EB",
+  "background_color": "#ffffff"
+}
+
