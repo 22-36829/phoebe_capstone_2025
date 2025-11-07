@@ -87,7 +87,8 @@ def build_semantic_index():
         enhanced_ai_service.refresh_inventory(force=True)
         
         # Get medicine count from the refreshed service
-        medicine_count = len(enhanced_ai_service.medicine_database) if hasattr(enhanced_ai_service, 'medicine_database') else 0
+        service = _get_enhanced_ai_service()
+        medicine_count = len(service.medicine_database) if service and hasattr(service, 'medicine_database') else 0
         
         return jsonify({
             'success': True,
@@ -241,11 +242,25 @@ def classify_medicine():
             'error': f'Classification failed: {str(e)}'
         }), 500
 
+def _get_enhanced_ai_service():
+    """Lazy initialize enhanced AI service"""
+    global enhanced_ai_service
+    if enhanced_ai_service is None:
+        try:
+            from services.enhanced_ai_service import EnhancedAIService
+            enhanced_ai_service = EnhancedAIService()
+            logger.info("Enhanced AI service initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize enhanced AI service: {e}")
+            return None
+    return enhanced_ai_service
+
 @ai_enhanced_bp.route('/chat', methods=['POST'])
 def enhanced_ai_chat():
     """Enhanced AI chat with inventory integration"""
     try:
-        if not enhanced_ai_service:
+        service = _get_enhanced_ai_service()
+        if not service:
             return jsonify({
                 'success': False,
                 'error': 'Enhanced AI service is not available'
@@ -262,7 +277,7 @@ def enhanced_ai_chat():
             }), 400
         
         start_time = time.perf_counter()
-        response_payload = enhanced_ai_service.generate_chat_response(message)
+        response_payload = service.generate_chat_response(message)
         latency_ms = (time.perf_counter() - start_time) * 1000
 
         record_interaction(

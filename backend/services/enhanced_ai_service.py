@@ -168,19 +168,29 @@ class EnhancedAIService:
         self.category_mappings: Dict[str, List[str]] = {}
         self.brand_mappings: Dict[str, str] = {}
         self._load_synonym_config(force=True)
-        # Initialize semantic embedding service (lazy, optional)
-        self.semantic_service = SemanticEmbeddingService()
+        # Initialize semantic embedding service (lazy, will load on first use)
+        self.semantic_service = None  # Will be initialized lazily
+        self._semantic_service_initialized = False
         
         # Load data from database or CSV
         if use_database:
             self.load_database_data()
         else:
             self.load_csv_data()
-        # Warm up semantic embeddings (best-effort, non-blocking)
-        try:
-            self.semantic_service.load_or_build(self.medicine_database)
-        except Exception:
-            pass
+        # Don't warm up semantic embeddings - load on first use to save memory
+    
+    def _ensure_semantic_service(self):
+        """Lazy initialize semantic service only when needed"""
+        if not self._semantic_service_initialized:
+            try:
+                logger.info("Lazy loading semantic embedding service...")
+                self.semantic_service = SemanticEmbeddingService()
+                self._semantic_service_initialized = True
+                logger.info("Semantic embedding service initialized")
+            except Exception as e:
+                logger.warning(f"Could not initialize semantic service: {e}. Using fallback search.")
+                self.semantic_service = None
+                self._semantic_service_initialized = True
     
     def load_csv_data(self):
         """Load and process CSV data (deprecated - use database instead)"""
@@ -741,7 +751,8 @@ class EnhancedAIService:
         keyword_matches: List[Dict[str, Any]] = []
         keyword_score_map: Dict[str, float] = {}
         try:
-            if getattr(self, 'semantic_service', None) is not None:
+            self._ensure_semantic_service()
+            if self.semantic_service is not None:
                 keyword_results = self.semantic_service.keyword_search(query_lower, top_k=limit)
                 for name, score in keyword_results:
                     item = self.medicine_database.get(name.lower())
@@ -758,8 +769,12 @@ class EnhancedAIService:
         try:
             # Build or load embeddings lazily based on current catalog
             if getattr(self, 'semantic_service', None) is not None:
-                self.semantic_service.load_or_build(self.medicine_database)
-                results = self.semantic_service.search(query_lower, top_k=limit)
+                self._ensure_semantic_service()
+                if self.semantic_service:
+                    self.semantic_service.load_or_build(self.medicine_database)
+                    results = self.semantic_service.search(query_lower, top_k=limit)
+                else:
+                    results = []
                 for name, score in results:
                     item = self.medicine_database.get(name.lower())
                     if item:
