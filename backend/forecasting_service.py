@@ -39,7 +39,9 @@ class ForecastingService:
             if self.db_connection_string
             else None
         )
-        self.models_dir = os.path.join('backend', 'ai_models')
+        # Models directory - use relative to this file's location
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.models_dir = os.path.join(base_dir, 'ai_models')
         os.makedirs(self.models_dir, exist_ok=True)
 
     @staticmethod
