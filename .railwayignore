@@ -1,26 +1,52 @@
 # Ignore frontend entirely (not needed for backend deployment)
 frontend/
+frontend/**
 
 # Ignore large AI model files during Railway builds
 backend/ai_models/
-
-# Ignore other large/unnecessary files
+backend/ai_models/**
 *.pkl
 *.joblib
 *.npy
+*.json
+!backend/config/ai_synonyms.json
+
+# Ignore other large/unnecessary files
 node_modules/
+node_modules/**
 build/
+build/**
 dist/
+dist/**
 .git/
+.git/**
 *.md
 !README.md
 scripts/
+scripts/**
 .DS_Store
 .vscode/
+.vscode/**
 .idea/
+.idea/**
 __pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 .env
 .env.local
+
+# Ignore documentation files
+*.md
+!README.md
+FORECASTING_*.md
+RAILWAY_*.md
+DEPLOYMENT_*.md
+AI_ASSISTANT_*.md
+QUICK_START_*.md
+
+# Ignore test and debug files
+test_*.py
+*_test.py
+debug_*.py
 
