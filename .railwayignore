@@ -1,0 +1,11 @@
+# Ignore large AI model files during Railway builds
+backend/ai_models/*.pkl
+backend/ai_models/*.joblib
+backend/ai_models/*.npy
+backend/ai_models/*.json
+frontend/node_modules/
+frontend/build/
+*.pkl
+*.joblib
+*.npy
+

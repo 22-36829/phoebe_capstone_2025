@@ -24,6 +24,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.venv/
+backend/.venv/
 
 # Database
 *.db
@@ -92,6 +94,11 @@ tmp/
 *.pkl
 *.joblib
 *.model
+*.npy
+backend/ai_models/*.pkl
+backend/ai_models/*.joblib
+backend/ai_models/*.npy
+backend/ai_models/*.json
 
 # CSV data files (if sensitive)
 # datasets_clean/
