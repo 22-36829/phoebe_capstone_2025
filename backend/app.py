@@ -9,8 +9,42 @@ from dotenv import load_dotenv
 from flask_jwt_extended import JWTManager
 import bcrypt
 from utils.helpers import get_database_url
+import logging
 
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Download NLTK data on startup (if NLTK is available)
+try:
+    import nltk
+    import ssl
+    try:
+        _create_unverified_https_context = ssl._create_unverified_context
+    except AttributeError:
+        pass
+    else:
+        ssl._create_default_https_context = _create_unverified_https_context
+    
+    # Download NLTK data to a writable location
+    nltk_data_dir = os.path.join(os.getcwd(), 'nltk_data')
+    os.makedirs(nltk_data_dir, exist_ok=True)
+    nltk.data.path.append(nltk_data_dir)
+    
+    # Download required NLTK data
+    try:
+        nltk.download('punkt', quiet=True, download_dir=nltk_data_dir)
+        nltk.download('stopwords', quiet=True, download_dir=nltk_data_dir)
+        nltk.download('wordnet', quiet=True, download_dir=nltk_data_dir)
+        logger.info("NLTK data downloaded successfully")
+    except Exception as e:
+        logger.warning(f"Could not download NLTK data: {e}. Some NLP features may be limited.")
+except ImportError:
+    logger.info("NLTK not available, skipping NLTK data download")
+except Exception as e:
+    logger.warning(f"Error setting up NLTK: {e}")
 
 DATABASE_URL = get_database_url()
 

@@ -53,6 +53,9 @@ class AIAssistantService:
     
     def load_models(self):
         """Load or initialize recommendation models"""
+        import os
+        import shutil
+        
         try:
             # Try to load existing models
             with open('ai_models/tfidf_vectorizer.pkl', 'rb') as f:
@@ -62,8 +65,16 @@ class AIAssistantService:
             with open('ai_models/product_data.pkl', 'rb') as f:
                 self.product_data = pickle.load(f)
             logger.info("Loaded existing AI models")
-        except FileNotFoundError:
-            logger.info("No existing models found, will train new ones")
+        except (FileNotFoundError, pickle.UnpicklingError, EOFError, ValueError) as e:
+            logger.warning(f"Could not load existing models ({type(e).__name__}): {e}. Regenerating...")
+            # Delete corrupted files if they exist
+            try:
+                if os.path.exists('ai_models'):
+                    shutil.rmtree('ai_models')
+                os.makedirs('ai_models', exist_ok=True)
+            except Exception as cleanup_error:
+                logger.warning(f"Error cleaning up model files: {cleanup_error}")
+            # Train new models
             self.train_models()
     
     def train_models(self):
@@ -125,7 +136,7 @@ class AIAssistantService:
             self.product_vectors = self.vectorizer.fit_transform(df['text_features'])
             self.product_data = df
             
-            # Create models directory if it doesn't exist
+            # Ensure ai_models directory exists
             os.makedirs('ai_models', exist_ok=True)
             
             # Save models
@@ -506,8 +517,20 @@ class AIAssistantService:
                 'source': 'Local database'
             }
 
-# Initialize AI service
-ai_service = AIAssistantService()
+# Initialize AI service with error handling
+ai_service = None
+try:
+    ai_service = AIAssistantService()
+    logger.info("AI service initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize AI service: {e}. AI features may be limited.")
+    # Create a minimal service that won't crash the app
+    class MinimalAIService:
+        def locate_product(self, product_name, pharmacy_id):
+            return []
+        def search_products(self, query, pharmacy_id, limit=10):
+            return []
+    ai_service = MinimalAIService()
 
 @ai_bp.route('/chat', methods=['POST'])
 def chat():
