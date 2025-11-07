@@ -550,6 +550,18 @@ except Exception as e:
             return []
         def search_products(self, query, pharmacy_id, limit=10):
             return []
+        def get_recommendations(self, query, pharmacy_id, limit=5):
+            return []
+        def get_medical_info(self, medicine_name):
+            return {
+                'name': medicine_name,
+                'description': 'Information not available. Please consult your pharmacist.',
+                'uses': ['Consult your pharmacist'],
+                'side_effects': ['Consult your healthcare provider'],
+                'source': 'Service unavailable'
+            }
+        def _ensure_models_loaded(self):
+            pass  # No-op for minimal service
     ai_service = MinimalAIService()
 
 @ai_bp.route('/chat', methods=['POST'])
@@ -567,20 +579,35 @@ def chat():
             }), 400
         
         # Improved intent classification using AI training service
-        intent = ai_training.classify_intent(message)
+        try:
+            intent = ai_training.classify_intent(message)
+        except Exception as e:
+            logger.warning(f"Intent classification failed: {e}, using default")
+            intent = 'general_query'
         
         if intent == 'stock_query':
             # Stock/availability query
             # Extract product name using training service
-            product_name = ai_training.extract_medicine_name(message, intent)
+            try:
+                product_name = ai_training.extract_medicine_name(message, intent)
+                
+                # Try fuzzy matching to correct product name
+                if product_name:
+                    try:
+                        corrected_name = fuzzy_matcher.suggest_correction(product_name)
+                        if corrected_name:
+                            product_name = corrected_name
+                    except Exception as e:
+                        logger.warning(f"Fuzzy matching failed: {e}")
+            except Exception as e:
+                logger.warning(f"Medicine name extraction failed: {e}")
+                product_name = message  # Fallback to original message
             
-            # Try fuzzy matching to correct product name
-            if product_name:
-                corrected_name = fuzzy_matcher.suggest_correction(product_name)
-                if corrected_name:
-                    product_name = corrected_name
-            
-            locations = ai_service.locate_product(product_name, pharmacy_id)
+            try:
+                locations = ai_service.locate_product(product_name, pharmacy_id) if ai_service else []
+            except Exception as e:
+                logger.error(f"Error locating product: {e}")
+                locations = []
             
             if locations:
                 # Format as stock information
