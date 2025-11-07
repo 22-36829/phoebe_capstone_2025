@@ -316,14 +316,20 @@ def refresh_inventory_cache():
         if auth_error is not None:
             return auth_error
         
-        enhanced_ai_service.refresh_inventory(force=True)
-
-        last_refresh = enhanced_ai_service.last_refresh.isoformat() if enhanced_ai_service.last_refresh else None
+        service = _get_enhanced_ai_service()
+        if service:
+            service.refresh_inventory(force=True)
+            last_refresh = service.last_refresh.isoformat() if service.last_refresh else None
+            source = service.last_refresh_source
+        else:
+            last_refresh = None
+            source = None
+        
         return jsonify({
             'success': True,
             'message': 'Inventory cache refreshed successfully',
             'last_refresh': last_refresh,
-            'source': enhanced_ai_service.last_refresh_source
+            'source': source
         })
 
     except Exception as e:
