@@ -218,20 +218,62 @@ def root():
 
 @app.get('/api/health')
 def health():
-	"""Health check endpoint - includes database connection status"""
-	try:
-		with engine.connect() as conn:
-			ok = conn.execute(text('select 1')).scalar() == 1
-		return jsonify({ 
-			'status': 'ok' if ok else 'down',
-			'database': 'connected' if ok else 'disconnected'
-		})
-	except Exception as e:
-		return jsonify({ 
-			'status': 'partial',
-			'database': 'disconnected',
-			'error': str(e)
-		}), 503
+    """Health check endpoint - includes database connection status"""
+    try:
+        with engine.connect() as conn:
+            ok = conn.execute(text('select 1')).scalar() == 1
+        return jsonify({
+            'status': 'ok' if ok else 'down',
+            'database': 'connected' if ok else 'disconnected'
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'partial',
+            'database': 'disconnected',
+            'error': str(e)
+        }), 503
+
+@app.get('/api/health/ai')
+def health_ai():
+    """AI services health check endpoint"""
+    try:
+        ai_status = {
+            'basic': False,
+            'enhanced': False,
+            'errors': []
+        }
+        
+        # Check basic AI service
+        try:
+            from routes.ai import get_ai_service, _ai_service_initialized, _ai_service_init_error
+            if _ai_service_initialized:
+                service = get_ai_service()
+                # Check if it's the minimal service (fallback)
+                ai_status['basic'] = hasattr(service, 'vectorizer') or service is not None
+                if _ai_service_init_error:
+                    ai_status['errors'].append(f"Basic AI: {_ai_service_init_error}")
+        except Exception as e:
+            ai_status['errors'].append(f"Basic AI check failed: {str(e)}")
+        
+        # Check enhanced AI service
+        try:
+            from routes.ai_enhanced import _get_enhanced_ai_service
+            service = _get_enhanced_ai_service()
+            ai_status['enhanced'] = service is not None
+        except Exception as e:
+            ai_status['errors'].append(f"Enhanced AI check failed: {str(e)}")
+        
+        all_ready = ai_status['basic'] and ai_status['enhanced']
+        return jsonify({
+            'status': 'ready' if all_ready else 'partial',
+            'services': ai_status,
+            'ready': all_ready
+        }), 200 if all_ready else 503
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
 
 # Handle favicon requests to prevent 404 errors
 @app.get('/favicon.ico')
@@ -359,6 +401,52 @@ app.register_blueprint(announcements_bp)
 # Inventory Requests Routes (frontend expects /api/inventory/*)
 from routes.inventory import inventory_bp
 app.register_blueprint(inventory_bp)
+
+# =========================
+# INITIALIZE AI SERVICES AT STARTUP
+# =========================
+def initialize_ai_services():
+    """Initialize AI services at startup (non-blocking, but models pre-loaded)"""
+    import threading
+    import time
+    
+    def init_services():
+        try:
+            logger.info("Starting AI services initialization...")
+            
+            # Initialize basic AI service
+            try:
+                from routes.ai import initialize_ai_service
+                success = initialize_ai_service()
+                if success:
+                    logger.info("✓ Basic AI service initialized successfully")
+                else:
+                    logger.warning("✗ Basic AI service initialization failed, using fallback")
+            except Exception as e:
+                logger.error(f"Error initializing basic AI service: {e}", exc_info=True)
+            
+            # Initialize enhanced AI service (lazy, but try early)
+            try:
+                from routes.ai_enhanced import _get_enhanced_ai_service
+                service = _get_enhanced_ai_service()
+                if service:
+                    logger.info("✓ Enhanced AI service initialized successfully")
+                else:
+                    logger.warning("✗ Enhanced AI service initialization failed")
+            except Exception as e:
+                logger.error(f"Error initializing enhanced AI service: {e}", exc_info=True)
+            
+            logger.info("AI services initialization completed")
+        except Exception as e:
+            logger.error(f"Error in AI services initialization: {e}", exc_info=True)
+    
+    # Start initialization in background thread to avoid blocking
+    init_thread = threading.Thread(target=init_services, daemon=True)
+    init_thread.start()
+    logger.info("AI services initialization started in background")
+
+# Initialize AI services after all routes are registered
+initialize_ai_services()
 
 def _in_reloader_process() -> bool:
 	"""Return True when running inside the active Flask reloader process."""

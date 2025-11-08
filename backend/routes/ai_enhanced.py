@@ -240,21 +240,37 @@ def classify_medicine():
             'error': f'Classification failed: {str(e)}'
         }), 500
 
+_enhanced_ai_service_initialized = False
+_enhanced_ai_service_init_error = None
+
 def _get_enhanced_ai_service():
-    """Lazy initialize enhanced AI service"""
-    global enhanced_ai_service
-    if enhanced_ai_service is None:
-        try:
-            from services.enhanced_ai_service import EnhancedAIService
-            enhanced_ai_service = EnhancedAIService()
-            logger.info("Enhanced AI service initialized (lazy loading)")
-        except SyntaxError as e:
-            logger.error(f"Syntax error in enhanced_ai_service: {e}. Please check the code.")
-            return None
-        except Exception as e:
-            logger.error(f"Failed to initialize enhanced AI service: {e}", exc_info=True)
-            return None
-    return enhanced_ai_service
+    """Initialize enhanced AI service (called at startup or on first use)"""
+    global enhanced_ai_service, _enhanced_ai_service_initialized, _enhanced_ai_service_init_error
+    if enhanced_ai_service is not None:
+        return enhanced_ai_service
+    
+    if _enhanced_ai_service_initialized:
+        # Already tried to initialize, return None if it failed
+        return None
+    
+    try:
+        logger.info("Initializing enhanced AI service...")
+        from services.enhanced_ai_service import EnhancedAIService
+        enhanced_ai_service = EnhancedAIService()
+        _enhanced_ai_service_initialized = True
+        _enhanced_ai_service_init_error = None
+        logger.info("Enhanced AI service initialized successfully")
+        return enhanced_ai_service
+    except SyntaxError as e:
+        _enhanced_ai_service_init_error = f"Syntax error: {e}"
+        logger.error(f"Syntax error in enhanced_ai_service: {e}. Please check the code.")
+        _enhanced_ai_service_initialized = True
+        return None
+    except Exception as e:
+        _enhanced_ai_service_init_error = str(e)
+        logger.error(f"Failed to initialize enhanced AI service: {e}", exc_info=True)
+        _enhanced_ai_service_initialized = True
+        return None
 
 @ai_enhanced_bp.route('/chat', methods=['POST'])
 def enhanced_ai_chat():

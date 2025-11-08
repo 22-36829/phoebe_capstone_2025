@@ -156,23 +156,36 @@ class AIAssistantService:
             logger.error(f"Error training models: {str(e)}")
     
     def _ensure_models_loaded(self):
-        """Lazy load models on first use"""
-        if not self._models_loaded and not self._load_lock:
-            self._load_lock = True
-            try:
-                logger.info("Lazy loading AI models...")
-                self.load_models()
-                self._models_loaded = True
-                logger.info("AI models loaded successfully")
-            except Exception as e:
-                logger.error(f"Error loading models: {e}")
-                self._models_loaded = False
-            finally:
-                self._load_lock = False
+        """Load models (called at startup or on first use)"""
+        if self._models_loaded:
+            return
+        if self._load_lock:
+            # Another thread is loading, wait a bit
+            import time
+            for _ in range(50):  # Wait up to 5 seconds
+                time.sleep(0.1)
+                if self._models_loaded:
+                    return
+            logger.warning("Timeout waiting for models to load")
+            return
+        
+        self._load_lock = True
+        try:
+            logger.info("Loading AI models...")
+            self.load_models()
+            self._models_loaded = True
+            logger.info("AI models loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading models: {e}", exc_info=True)
+            self._models_loaded = False
+            raise  # Re-raise to let caller know initialization failed
+        finally:
+            self._load_lock = False
     
     def get_recommendations(self, query, pharmacy_id, limit=5):
         """Get product recommendations based on query with fuzzy matching"""
-        self._ensure_models_loaded()
+        if not self._models_loaded:
+            self._ensure_models_loaded()
         try:
             # First try fuzzy matching for medicine names
             if any(word in query.lower() for word in ['paracetamol', 'biogesic', 'aspirin', 'ibuprofen', 'tempra', 'amoxicillin']):
@@ -292,7 +305,8 @@ class AIAssistantService:
     
     def locate_product(self, product_name, pharmacy_id):
         """Find product location and availability with fuzzy matching"""
-        self._ensure_models_loaded()
+        if not self._models_loaded:
+            self._ensure_models_loaded()
         try:
             # First try fuzzy matching
             fuzzy_results = fuzzy_matcher.fuzzy_search_products(product_name, pharmacy_id, limit=5)
@@ -537,32 +551,59 @@ class AIAssistantService:
                 'source': 'Local database'
             }
 
-# Initialize AI service with error handling - lazy loading
+# Initialize AI service - will be loaded at startup
 ai_service = None
-try:
-    ai_service = AIAssistantService()
-    logger.info("AI service initialized (lazy loading enabled)")
-except Exception as e:
-    logger.error(f"Failed to initialize AI service: {e}. AI features may be limited.")
-    # Create a minimal service that won't crash the app
-    class MinimalAIService:
-        def locate_product(self, product_name, pharmacy_id):
-            return []
-        def search_products(self, query, pharmacy_id, limit=10):
-            return []
-        def get_recommendations(self, query, pharmacy_id, limit=5):
-            return []
-        def get_medical_info(self, medicine_name):
-            return {
-                'name': medicine_name,
-                'description': 'Information not available. Please consult your pharmacist.',
-                'uses': ['Consult your pharmacist'],
-                'side_effects': ['Consult your healthcare provider'],
-                'source': 'Service unavailable'
-            }
-        def _ensure_models_loaded(self):
-            pass  # No-op for minimal service
-    ai_service = MinimalAIService()
+_ai_service_initialized = False
+_ai_service_init_error = None
+
+def initialize_ai_service():
+    """Initialize AI service at startup with models pre-loaded"""
+    global ai_service, _ai_service_initialized, _ai_service_init_error
+    if _ai_service_initialized:
+        return ai_service is not None
+    
+    try:
+        logger.info("Initializing AI service at startup...")
+        ai_service = AIAssistantService()
+        
+        # Pre-load models at startup (not lazy)
+        logger.info("Pre-loading AI models...")
+        ai_service._ensure_models_loaded()
+        
+        _ai_service_initialized = True
+        _ai_service_init_error = None
+        logger.info("AI service initialized successfully with models loaded")
+        return True
+    except Exception as e:
+        _ai_service_init_error = str(e)
+        logger.error(f"Failed to initialize AI service at startup: {e}", exc_info=True)
+        # Create a minimal service that won't crash the app
+        class MinimalAIService:
+            def locate_product(self, product_name, pharmacy_id):
+                return []
+            def search_products(self, query, pharmacy_id, limit=10):
+                return []
+            def get_recommendations(self, query, pharmacy_id, limit=5):
+                return []
+            def get_medical_info(self, medicine_name):
+                return {
+                    'name': medicine_name,
+                    'description': 'Information not available. Please consult your pharmacist.',
+                    'uses': ['Consult your pharmacist'],
+                    'side_effects': ['Consult your healthcare provider'],
+                    'source': 'Service unavailable'
+                }
+            def _ensure_models_loaded(self):
+                pass  # No-op for minimal service
+        ai_service = MinimalAIService()
+        _ai_service_initialized = True
+        return False
+
+def get_ai_service():
+    """Get AI service, initializing if not already done"""
+    if not _ai_service_initialized:
+        initialize_ai_service()
+    return ai_service
 
 @ai_bp.route('/chat', methods=['POST'])
 def chat():
@@ -604,7 +645,7 @@ def chat():
                 product_name = message  # Fallback to original message
             
             try:
-                locations = ai_service.locate_product(product_name, pharmacy_id) if ai_service else []
+                locations = get_ai_service().locate_product(product_name, pharmacy_id)
             except Exception as e:
                 logger.error(f"Error locating product: {e}")
                 locations = []
@@ -640,7 +681,7 @@ def chat():
                 product_name = message
             
             try:
-                locations = ai_service.locate_product(product_name, pharmacy_id) if ai_service else []
+                locations = get_ai_service().locate_product(product_name, pharmacy_id)
             except Exception as e:
                 logger.error(f"Error locating product: {e}")
                 locations = []
@@ -673,7 +714,7 @@ def chat():
                 medicine_name = message
             
             try:
-                medical_info = ai_service.get_medical_info(medicine_name) if ai_service else {}
+                medical_info = get_ai_service().get_medical_info(medicine_name)
             except Exception as e:
                 logger.error(f"Error getting medical info: {e}")
                 medical_info = {
@@ -704,7 +745,7 @@ def chat():
                 query = message
             
             try:
-                recommendations = ai_service.get_recommendations(query, pharmacy_id) if ai_service else []
+                recommendations = get_ai_service().get_recommendations(query, pharmacy_id)
             except Exception as e:
                 logger.error(f"Error getting recommendations: {e}")
                 recommendations = []
@@ -792,7 +833,7 @@ def chat_advanced():
                 corrected_name = fuzzy_matcher.suggest_correction(product_name)
                 if corrected_name:
                     product_name = corrected_name
-            locations = ai_service.locate_product(product_name, pharmacy_id) if product_name else []
+            locations = get_ai_service().locate_product(product_name, pharmacy_id) if product_name else []
             
             if locations:
                 # Format as stock information
@@ -812,7 +853,7 @@ def chat_advanced():
                 corrected_name = fuzzy_matcher.suggest_correction(product_name)
                 if corrected_name:
                     product_name = corrected_name
-            data = ai_service.locate_product(product_name, pharmacy_id) if product_name else []
+            data = get_ai_service().locate_product(product_name, pharmacy_id) if product_name else []
             
         elif intent == 'medical_info_query':
             medicine_name = entities.get('products', [''])[0] if entities.get('products') else ''
@@ -820,13 +861,13 @@ def chat_advanced():
                 corrected_name = fuzzy_matcher.suggest_correction(medicine_name)
                 if corrected_name:
                     medicine_name = corrected_name
-            data = ai_service.get_medical_info(medicine_name) if medicine_name else {}
+            data = get_ai_service().get_medical_info(medicine_name) if medicine_name else {}
             
         elif intent == 'recommendation_query':
             query = entities.get('conditions', [''])[0] if entities.get('conditions') else ''
             if not query:
                 query = entities.get('products', [''])[0] if entities.get('products') else ''
-            data = ai_service.get_recommendations(query, pharmacy_id) if query else []
+            data = get_ai_service().get_recommendations(query, pharmacy_id) if query else []
             
         # Use advanced conversational AI
         response = advanced_conversational_ai.process_message(
@@ -864,7 +905,7 @@ def get_recommendations():
                 'error': 'Query is required'
             }), 400
         
-        recommendations = ai_service.get_recommendations(query, pharmacy_id, limit)
+        recommendations = get_ai_service().get_recommendations(query, pharmacy_id, limit)
         
         return jsonify({
             'success': True,
@@ -1033,7 +1074,7 @@ def locate_product():
                 'error': 'Product name is required'
             }), 400
         
-        locations = ai_service.locate_product(product_name, pharmacy_id)
+        locations = get_ai_service().locate_product(product_name, pharmacy_id)
         
         return jsonify({
             'success': True,
@@ -1060,7 +1101,7 @@ def get_medical_info():
                 'error': 'Medicine name is required'
             }), 400
         
-        medical_info = ai_service.get_medical_info(medicine_name)
+        medical_info = get_ai_service().get_medical_info(medicine_name)
         
         return jsonify({
             'success': True,
@@ -1180,7 +1221,7 @@ def ultra_feedback():
 def retrain_models():
     """Retrain AI models with latest data"""
     try:
-        ai_service.train_models()
+        get_ai_service().train_models()
         
         return jsonify({
             'success': True,
