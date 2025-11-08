@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Package, AlertTriangle, CheckCircle, Clock, Plus, ChevronDown, Loader2, Trash2, Pencil, Layers, Building2, Search, Printer, FileText, Users, BarChart3, AlertCircle, CheckCircle2, XCircle } from 'lucide-react';
 import { InventoryAPI, POSAPI, ManagerAPI } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
@@ -145,13 +145,15 @@ const InventoryManagement = () => {
         if (deliveriesOpen && inlineEditing) {
           e.preventDefault();
           const row = deliveries.find(d => d.id === inlineEditing);
+          // eslint-disable-next-line no-use-before-define
           if (row) saveInlineEdit(row);
         }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [deliveriesOpen, reportsOpen, inlineEditing, deliveries, saveInlineEdit]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deliveriesOpen, reportsOpen, inlineEditing, deliveries]);
 
   const loadProducts = async () => {
     try {
@@ -753,6 +755,7 @@ const InventoryManagement = () => {
       if (e.key === 'Enter' && e.ctrlKey && inlineEditing) {
         const delivery = deliveries.find(d => d.id === inlineEditing);
         if (delivery) {
+          // eslint-disable-next-line no-use-before-define
           saveInlineEdit(delivery);
         }
       }
@@ -762,14 +765,18 @@ const InventoryManagement = () => {
       document.addEventListener('keydown', handleKeyDown);
       return () => document.removeEventListener('keydown', handleKeyDown);
     }
-  }, [inlineEditing, deliveries, deliveriesOpen, saveInlineEdit]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inlineEditing, deliveries, deliveriesOpen]);
 
   useEffect(() => { 
     loadProducts(); 
     loadCategories(); 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusView]);
-  useEffect(() => { if (token) loadRequests(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [token, statusFilter]);
+  useEffect(() => { 
+    if (token) loadRequests(); 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, statusFilter]);
   useEffect(() => { if (token) loadReturns(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [token]);
   useEffect(() => { if (token) loadStaff(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [token]);
 
