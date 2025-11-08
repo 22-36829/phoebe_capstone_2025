@@ -36,11 +36,16 @@ def get_database_url():
 	"""
 	Get DATABASE_URL from environment and sanitize it by removing invalid parameters.
 	
-	Removes 'pgbouncer' parameter which is not recognized by psycopg2.
+	Converts psycopg2 URLs to psycopg (psycopg3) for Python 3.13 compatibility.
+	Removes 'pgbouncer' parameter which is not recognized by psycopg.
 	pgbouncer is handled automatically when connecting through the pooler port.
 	"""
-	default_url = 'postgresql+psycopg2://postgres:PhoebeDrugStore01@db.xybuirzvlfuwmtcokkwm.supabase.co:5432/postgres?sslmode=require'
+	default_url = 'postgresql+psycopg://postgres:PhoebeDrugStore01@db.xybuirzvlfuwmtcokkwm.supabase.co:5432/postgres?sslmode=require'
 	db_url = os.getenv('DATABASE_URL', default_url)
+	
+	# Convert psycopg2 to psycopg (psycopg3) for Python 3.13 compatibility
+	if 'postgresql+psycopg2://' in db_url:
+		db_url = db_url.replace('postgresql+psycopg2://', 'postgresql+psycopg://')
 	
 	# Parse the URL
 	parsed = urlparse(db_url)
@@ -48,7 +53,7 @@ def get_database_url():
 	# Parse query parameters
 	query_params = parse_qs(parsed.query)
 	
-	# Remove pgbouncer parameter if present (psycopg2 doesn't recognize it)
+	# Remove pgbouncer parameter if present (psycopg doesn't recognize it)
 	if 'pgbouncer' in query_params:
 		del query_params['pgbouncer']
 	
