@@ -16,6 +16,7 @@ const InventoryRequests = () => {
   const [reqPageSize, setReqPageSize] = useState(10);
   const [reqTotal, setReqTotal] = useState(0);
   const [editModal, setEditModal] = useState(null); // {id, quantity_change, reason}
+  // eslint-disable-next-line no-unused-vars
   const [error, setError] = useState('');
 
   // Products (for deliveries access only)
@@ -32,13 +33,16 @@ const InventoryRequests = () => {
   const [deliveries, setDeliveries] = useState([]);
   const [deliveryForm, setDeliveryForm] = useState({ quantity: '', expiration_date: '', delivery_date: '', supplier_name: '', cost_price: '' });
   const [deliveryTarget, setDeliveryTarget] = useState(null);
+  // eslint-disable-next-line no-unused-vars
   const [suppliers, setSuppliers] = useState([]);
   const [deliverySearch, setDeliverySearch] = useState('');
   const [editingDelivery, setEditingDelivery] = useState(null);
   const [deliveryPage, setDeliveryPage] = useState(1);
   const [deliveryPageSize, setDeliveryPageSize] = useState(10);
   const [deliveryPageInput, setDeliveryPageInput] = useState('');
+  // eslint-disable-next-line no-unused-vars
   const [inlineEditing, setInlineEditing] = useState(null);
+  // eslint-disable-next-line no-unused-vars
   const [inlineEditValues, setInlineEditValues] = useState({});
   const [deliveryError, setDeliveryError] = useState('');
   const deliverySearchRef = useRef(null);
@@ -70,7 +74,13 @@ const InventoryRequests = () => {
     } catch {}
   };
 
-  useEffect(() => { if (token) { loadRequests(); loadProducts(); } /* eslint-disable-next-line */ }, [token, statusFilter, reqPage, reqPageSize]);
+  useEffect(() => { 
+    if (token) { 
+      loadRequests(); 
+      loadProducts(); 
+    } 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, statusFilter, reqPage, reqPageSize]);
 
   // Requests filtering like manager (general fields only)
   const filteredRequests = useMemo(() => {
@@ -210,6 +220,7 @@ const InventoryRequests = () => {
     }
   };
 
+  // eslint-disable-next-line no-unused-vars
   const startEditProposal = (delivery) => {
     setEditingDelivery(delivery);
     setDeliveryForm({

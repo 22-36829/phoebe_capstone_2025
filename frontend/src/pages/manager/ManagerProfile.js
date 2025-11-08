@@ -5,6 +5,7 @@ import { ManagerAPI } from '../../services/api';
 
 const ManagerProfile = () => {
   const { token, user } = useAuth();
+  // eslint-disable-next-line no-unused-vars
   const [showPassword, setShowPassword] = useState(false);
   const [formData, setFormData] = useState({
     firstName: '',

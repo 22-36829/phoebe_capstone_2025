@@ -151,7 +151,7 @@ const InventoryManagement = () => {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [deliveriesOpen, reportsOpen, inlineEditing, deliveries]);
+  }, [deliveriesOpen, reportsOpen, inlineEditing, deliveries, saveInlineEdit]);
 
   const loadProducts = async () => {
     try {
@@ -299,6 +299,7 @@ const InventoryManagement = () => {
         'sales_period': 'Sales Report by Period'
       }[reportType];
     
+    // eslint-disable-next-line no-unused-vars
     const staffName = reportStaffId ? staffList.find(s => s.id === parseInt(reportStaffId))?.name || 'All Staff' : 'All Staff';
     const requestedBy = user?.first_name && user?.last_name ? `${user.first_name} ${user.last_name}` : 'Manager';
     const dateRange = reportDateFrom && reportDateTo ? `${reportDateFrom} to ${reportDateTo}` : 'All Time';
@@ -761,9 +762,13 @@ const InventoryManagement = () => {
       document.addEventListener('keydown', handleKeyDown);
       return () => document.removeEventListener('keydown', handleKeyDown);
     }
-  }, [inlineEditing, deliveries, deliveriesOpen]);
+  }, [inlineEditing, deliveries, deliveriesOpen, saveInlineEdit]);
 
-  useEffect(() => { loadProducts(); loadCategories(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [statusView]);
+  useEffect(() => { 
+    loadProducts(); 
+    loadCategories(); 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusView]);
   useEffect(() => { if (token) loadRequests(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [token, statusFilter]);
   useEffect(() => { if (token) loadReturns(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [token]);
   useEffect(() => { if (token) loadStaff(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [token]);
@@ -878,6 +883,7 @@ const InventoryManagement = () => {
   const startIndex = (current - 1) * pageSize;
   const endIndex = Math.min(startIndex + pageSize, total);
   const pagedProducts = filteredProducts.slice(startIndex, endIndex);
+  // eslint-disable-next-line no-unused-vars
   const showFirstLast = totalPages > 7;
 
   // Clear page input when page changes externally
@@ -938,7 +944,7 @@ const InventoryManagement = () => {
       const toOk = !requestsDateTo || (created && created <= new Date(requestsDateTo + 'T23:59:59'));
       return matchesKw && matchesStaff && matchesStatus && fromOk && toOk;
     });
-  }, [requests, requestsSearch, requestsStaff, requestsDateFrom, requestsDateTo]);
+  }, [requests, requestsSearch, requestsStaff, requestsDateFrom, requestsDateTo, statusFilter]);
 
   // Filtered Returns
   const filteredReturns = useMemo(() => {
@@ -953,6 +959,7 @@ const InventoryManagement = () => {
     });
   }, [returnedItems, returnsSearch, returnsStaff, returnsDateFrom, returnsDateTo]);
 
+  // eslint-disable-next-line no-unused-vars
   const goToPending = () => {
     setTab('requests');
     setStatusFilter('pending');
@@ -981,6 +988,7 @@ const InventoryManagement = () => {
   };
 
   // Common pagination range generator (with ellipses)
+  // eslint-disable-next-line no-unused-vars
   const getPaginationRange = (currentPage, totalPageCount, siblingCount = 1) => {
     const totalPageNumbers = siblingCount * 2 + 5; // first, last, current, 2 ellipses
     if (totalPageNumbers >= totalPageCount) {

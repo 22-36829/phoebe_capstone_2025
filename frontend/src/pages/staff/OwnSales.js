@@ -30,7 +30,10 @@ const OwnSales = () => {
     }
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [token, user?.id]);
+  useEffect(() => { 
+    load(); 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, user?.id]);
 
   const filtered = useMemo(() => {
     const kw = search.trim().toLowerCase();

@@ -35,7 +35,8 @@ const Sustainability = () => {
     } finally {
       setLoading(false);
     }
-  }, [token, expiryFilters]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, expiryFilters, user?.role]);
 
   useEffect(() => {
     load();

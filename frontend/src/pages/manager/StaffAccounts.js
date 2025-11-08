@@ -55,7 +55,10 @@ const StaffAccounts = () => {
     }
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [token]);
+  useEffect(() => { 
+    load(); 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
   const handleCreate = async (e) => {
     e.preventDefault();

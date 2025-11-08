@@ -31,7 +31,6 @@ const AIAssistant = () => {
   ]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isTyping, setIsTyping] = useState(false);
   const [expandedSections, setExpandedSections] = useState({});
   const [lastSearchMessage, setLastSearchMessage] = useState('');
   const [showInfoModal, setShowInfoModal] = useState(false);
@@ -92,7 +91,6 @@ const AIAssistant = () => {
     setMessages(prev => [...prev, userMessage]);
     setInputMessage('');
     setIsLoading(true);
-    setIsTyping(true);
 
     try {
       const token = localStorage.getItem('token');
@@ -222,7 +220,6 @@ const AIAssistant = () => {
       setMessages(prev => [...prev, errorResponse]);
     } finally {
       setIsLoading(false);
-      setIsTyping(false);
     }
   };
 
