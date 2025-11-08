@@ -7,15 +7,12 @@ JWT_SECRET_KEY=69kdsyb6CUVLdTsUsQ0dsqK-DiTPSvhrbqtTucGpVA0
 APP_SECRET_KEY=XO5neDCr5RG9OLHuY2zjHGujZ1ypCf15xjUqXDlamBQ
 FLASK_DEBUG=0
 PORT=5000
-ENABLE_AI_ROUTES=false
 
 ================================================================================
-IMPORTANT: ENABLE_AI_ROUTES=false
+IMPORTANT: AI Assistant is ENABLED
 ================================================================================
-This disables AI Assistant routes on Railway.
-AI is deployed on Render instead.
-
-Forecasting will still work on Railway!
+AI Assistant routes are always enabled on Railway.
+Both AI and Forecasting are available.
 
 ================================================================================
 

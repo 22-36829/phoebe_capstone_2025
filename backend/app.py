@@ -391,24 +391,15 @@ app.register_blueprint(pos_bp)
 from routes.forecasting import forecasting_bp
 app.register_blueprint(forecasting_bp)
 
-# AI Assistant Routes (can be disabled via ENABLE_AI_ROUTES env var)
-# Set ENABLE_AI_ROUTES=false on Railway to disable AI routes
-# Default: enabled (for Render and local development)
-ENABLE_AI_ROUTES_ENV = os.getenv('ENABLE_AI_ROUTES', 'true')
-ENABLE_AI_ROUTES = ENABLE_AI_ROUTES_ENV.lower() in ('true', '1', 'yes', 'on')
-logger.info(f"ENABLE_AI_ROUTES environment variable: '{ENABLE_AI_ROUTES_ENV}' -> AI Routes: {'ENABLED' if ENABLE_AI_ROUTES else 'DISABLED'}")
-
-if ENABLE_AI_ROUTES:
-    try:
-        from routes.ai import ai_bp
-        from routes.ai_enhanced import ai_enhanced_bp
-        app.register_blueprint(ai_bp)
-        app.register_blueprint(ai_enhanced_bp)
-        logger.info("✓ AI Assistant routes enabled")
-    except Exception as e:
-        logger.warning(f"Failed to register AI routes: {e}")
-else:
-    logger.info("✗ AI Assistant routes disabled (ENABLE_AI_ROUTES=false)")
+# AI Assistant Routes (always enabled)
+try:
+    from routes.ai import ai_bp
+    from routes.ai_enhanced import ai_enhanced_bp
+    app.register_blueprint(ai_bp)
+    app.register_blueprint(ai_enhanced_bp)
+    logger.info("✓ AI Assistant routes enabled")
+except Exception as e:
+    logger.warning(f"Failed to register AI routes: {e}")
 
 # Support Tickets & Announcements Routes
 from routes.support import support_bp, announcements_bp
@@ -420,7 +411,7 @@ from routes.inventory import inventory_bp
 app.register_blueprint(inventory_bp)
 
 # =========================
-# INITIALIZE AI SERVICES AT STARTUP (only if AI routes are enabled)
+# INITIALIZE AI SERVICES AT STARTUP
 # =========================
 # For Railway/Gunicorn: Initialize synchronously in worker process
 # This ensures services are ready before accepting requests
@@ -430,11 +421,6 @@ _ai_services_initialized = False
 def initialize_ai_services():
     """Initialize AI services at startup (synchronous for Railway/Gunicorn)"""
     global _ai_services_initializing, _ai_services_initialized
-    
-    # Skip initialization if AI routes are disabled
-    if not ENABLE_AI_ROUTES:
-        logger.info("Skipping AI services initialization (AI routes disabled)")
-        return
     
     # Prevent multiple initializations
     if _ai_services_initialized or _ai_services_initializing:
