@@ -11,6 +11,13 @@ import {
   ChevronUp
 } from 'lucide-react';
 
+// Get API base URL - use same pattern as api.js
+const getApiBase = () => {
+  // In production, REACT_APP_API_BASE should be set to Railway URL
+  // In development, empty string uses proxy
+  return process.env.REACT_APP_API_BASE || '';
+};
+
 const AIAssistant = () => {
   const [messages, setMessages] = useState([
     {
@@ -99,8 +106,12 @@ const AIAssistant = () => {
       }
 
       // Use API_BASE for production (Railway), relative URL for development (proxy)
-      const API_BASE = process.env.REACT_APP_API_BASE || '';
+      const API_BASE = getApiBase();
       const apiUrl = API_BASE ? `${API_BASE}/api/ai/enhanced/chat` : '/api/ai/enhanced/chat';
+      
+      // Log the URL being used (for debugging - remove in production)
+      console.log('AI Assistant API URL:', apiUrl);
+      console.log('API_BASE from env:', process.env.REACT_APP_API_BASE);
       
       const response = await fetch(apiUrl, {
         method: 'POST',
@@ -115,14 +126,39 @@ const AIAssistant = () => {
         })
       });
 
-      const responseBody = await response.json().catch(() => ({}));
+      const responseBody = await response.json().catch((jsonError) => {
+        console.error('Error parsing JSON response:', jsonError);
+        console.error('Response status:', response.status);
+        console.error('Response headers:', response.headers);
+        return {};
+      });
+
+      console.log('AI Assistant Response:', {
+        ok: response.ok,
+        status: response.status,
+        success: responseBody.success,
+        hasResponse: !!responseBody.response,
+        url: apiUrl
+      });
 
       if (!response.ok) {
-        const errorMessage = responseBody.error || 'The assistant is temporarily unavailable.';
+        console.error('AI Assistant Error - Response not OK:', {
+          status: response.status,
+          statusText: response.statusText,
+          body: responseBody,
+          url: apiUrl
+        });
+        const errorMessage = responseBody.error || `The assistant is temporarily unavailable. (Status: ${response.status})`;
         throw new Error(errorMessage);
       }
 
       if (!responseBody.success || !responseBody.response) {
+        console.error('AI Assistant Error - Invalid response format:', {
+          success: responseBody.success,
+          hasResponse: !!responseBody.response,
+          responseBody: responseBody,
+          url: apiUrl
+        });
         const failureReason = responseBody.error || 'Received an unexpected response from the AI service.';
         throw new Error(failureReason);
       }
@@ -159,7 +195,23 @@ const AIAssistant = () => {
       setMessages(prev => [...prev, botResponse]);
     } catch (error) {
       console.error('Error calling AI API:', error);
-      const friendlyMessage = typeof error?.message === 'string' ? error.message : 'Please try again in a few moments.';
+      console.error('Error details:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name,
+        apiUrl: getApiBase() ? `${getApiBase()}/api/ai/enhanced/chat` : '/api/ai/enhanced/chat'
+      });
+      
+      // Provide more helpful error messages
+      let friendlyMessage = 'Please try again in a few moments.';
+      if (error.message) {
+        friendlyMessage = error.message;
+      } else if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
+        friendlyMessage = 'Unable to connect to the AI service. Please check your internet connection and try again.';
+      } else if (error.name === 'NetworkError') {
+        friendlyMessage = 'Network error. Please check your connection and try again.';
+      }
+      
       const errorResponse = {
         id: Date.now() + 1,
         type: 'bot',
@@ -188,7 +240,7 @@ const AIAssistant = () => {
       if (!message) return;
       const storedPharmacyId = localStorage.getItem('pharmacy_id');
 
-      const API_BASE = process.env.REACT_APP_API_BASE || '';
+      const API_BASE = getApiBase();
       const learnApiUrl = API_BASE ? `${API_BASE}/api/ai/learn` : '/api/ai/learn';
       await fetch(learnApiUrl, {
         method: 'POST',
