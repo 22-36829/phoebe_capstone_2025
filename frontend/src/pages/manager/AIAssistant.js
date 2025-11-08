@@ -98,7 +98,11 @@ const AIAssistant = () => {
         localStorage.setItem('userId', userId);
       }
 
-      const response = await fetch('/api/ai/enhanced/chat', {
+      // Use API_BASE for production (Railway), relative URL for development (proxy)
+      const API_BASE = process.env.REACT_APP_API_BASE || '';
+      const apiUrl = API_BASE ? `${API_BASE}/api/ai/enhanced/chat` : '/api/ai/enhanced/chat';
+      
+      const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -184,7 +188,9 @@ const AIAssistant = () => {
       if (!message) return;
       const storedPharmacyId = localStorage.getItem('pharmacy_id');
 
-      await fetch('/api/ai/learn', {
+      const API_BASE = process.env.REACT_APP_API_BASE || '';
+      const learnApiUrl = API_BASE ? `${API_BASE}/api/ai/learn` : '/api/ai/learn';
+      await fetch(learnApiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -304,6 +304,37 @@ def test_endpoint():
         'path': request.path
     }), 200
 
+@ai_enhanced_bp.route('/echo', methods=['POST'])
+def echo_endpoint():
+    """Echo endpoint to test request/response flow"""
+    try:
+        data = request.get_json(silent=True) or {}
+        return jsonify({
+            'success': True,
+            'message': 'Echo test successful',
+            'received': {
+                'message': data.get('message', 'No message'),
+                'user_id': data.get('user_id', 'No user_id'),
+                'pharmacy_id': data.get('pharmacy_id', 'No pharmacy_id')
+            },
+            'response': {
+                'message': f"Echo: {data.get('message', 'No message provided')}",
+                'type': 'echo',
+                'data': [],
+                'total_matches': 0,
+                'enhanced_mode': False
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': True,
+            'response': {
+                'message': f'Echo error: {str(e)}',
+                'type': 'error',
+                'data': []
+            }
+        }), 200
+
 @ai_enhanced_bp.route('/chat', methods=['POST', 'OPTIONS'])
 def enhanced_ai_chat():
     """Enhanced AI chat with inventory integration"""
