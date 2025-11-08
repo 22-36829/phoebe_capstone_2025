@@ -304,9 +304,28 @@ def test_endpoint():
         'path': request.path
     }), 200
 
-@ai_enhanced_bp.route('/chat', methods=['POST'])
+@ai_enhanced_bp.route('/chat', methods=['POST', 'OPTIONS'])
 def enhanced_ai_chat():
     """Enhanced AI chat with inventory integration"""
+    # Handle OPTIONS request for CORS
+    if request.method == 'OPTIONS':
+        return jsonify({'success': True}), 200
+    
+    # Create a safe default response in case of any error
+    safe_error_response = {
+        'success': True,
+        'response': {
+            'message': 'I apologize, but I encountered an error. Please try again.',
+            'type': 'error',
+            'data': [],
+            'total_matches': 0,
+            'enhanced_mode': False,
+            'confidence': 0.0,
+            'search_analysis': {'error': 'Unknown error'},
+            'pagination': {'showing': 0, 'total': 0, 'remaining': 0}
+        }
+    }
+    
     try:
         logger.info("=" * 80)
         logger.info("Enhanced AI chat endpoint CALLED")
@@ -318,24 +337,26 @@ def enhanced_ai_chat():
         logger.info("=" * 80)
         
         # Get request data first - handle both JSON and form data
+        data = {}
         try:
             if request.is_json:
-                data = request.get_json(force=False) or {}
-            else:
-                # Try to parse as JSON even if content-type is wrong
+                data = request.get_json(force=False, silent=True) or {}
+            elif request.data:
                 try:
                     import json
                     data = json.loads(request.data.decode('utf-8')) if request.data else {}
                 except:
                     data = request.form.to_dict() if request.form else {}
+            else:
+                data = request.form.to_dict() if request.form else {}
             
             logger.info(f"Parsed request data: {list(data.keys()) if data else 'empty'}")
         except Exception as parse_error:
             logger.error(f"Error parsing request data: {parse_error}", exc_info=True)
             data = {}
         
-        message = data.get('message', '').strip() if data else ''
-        user_id = data.get('user_id', 'anonymous') if data else 'anonymous'
+        message = str(data.get('message', '')).strip() if data else ''
+        user_id = str(data.get('user_id', 'anonymous')) if data else 'anonymous'
         pharmacy_id = data.get('pharmacy_id') if data else None
         
         logger.info(f"Message: '{message[:100] if message else 'empty'}...'")
@@ -343,57 +364,50 @@ def enhanced_ai_chat():
         
         if not message:
             logger.warning("Enhanced AI chat: No message provided")
-            return jsonify({
-                'success': True,  # Return success to frontend
-                'response': {
-                    'message': 'Please provide a message to search for.',
-                    'type': 'error',
-                    'data': [],
-                    'total_matches': 0,
-                    'enhanced_mode': False
-                }
-            }), 200
+            safe_error_response['response']['message'] = 'Please provide a message to search for.'
+            return jsonify(safe_error_response), 200
         
         logger.info(f"Enhanced AI chat: Processing message '{message[:50]}...' for user {user_id}")
         
         # Try to get service
+        service = None
         try:
             service = _get_enhanced_ai_service()
             logger.info(f"Enhanced AI service status: {service is not None}")
+            if service:
+                logger.info(f"Service type: {type(service).__name__}")
         except Exception as service_error:
             logger.error(f"Error getting enhanced AI service: {service_error}", exc_info=True)
+            import traceback
+            logger.error(f"Service error traceback: {traceback.format_exc()}")
             service = None
         
         if not service:
             logger.warning("Enhanced AI service not available, returning fallback response")
-            # Return success with error message in response (frontend expects success: true)
-            return jsonify({
-                'success': True,
-                'response': {
-                    'message': 'I apologize, but the enhanced AI service is currently unavailable. Please try again in a moment.',
-                    'type': 'error',
-                    'data': [],
-                    'total_matches': 0,
-                    'enhanced_mode': False,
-                    'confidence': 0.0,
-                    'search_analysis': {
-                        'error': 'Service not available'
-                    },
-                    'pagination': {
-                        'showing': 0,
-                        'total': 0,
-                        'remaining': 0
-                    }
-                }
-            }), 200
+            safe_error_response['response']['message'] = 'I apologize, but the enhanced AI service is currently unavailable. Please try again in a moment.'
+            safe_error_response['response']['search_analysis']['error'] = 'Service not available'
+            return jsonify(safe_error_response), 200
         
         # Generate response
+        response_payload = None
         try:
             logger.info("Calling generate_chat_response...")
             start_time = time.perf_counter()
+            
+            # Ensure message is a string
+            if not isinstance(message, str):
+                message = str(message)
+            
             response_payload = service.generate_chat_response(message)
             latency_ms = (time.perf_counter() - start_time) * 1000
+            
+            # Validate response payload
+            if not isinstance(response_payload, dict):
+                logger.error(f"Invalid response payload type: {type(response_payload)}")
+                raise ValueError("Invalid response format from generate_chat_response")
+            
             logger.info(f"Generated response in {latency_ms:.2f}ms with {response_payload.get('total_matches', 0)} matches")
+            logger.info(f"Response keys: {list(response_payload.keys())}")
 
             # Record interaction (non-blocking, don't fail if this errors)
             try:
@@ -407,60 +421,45 @@ def enhanced_ai_chat():
             except Exception as metrics_error:
                 logger.warning(f"Failed to record interaction metrics: {metrics_error}")
 
+            # Ensure response has required fields
+            if 'message' not in response_payload:
+                response_payload['message'] = 'Response generated successfully'
+            if 'type' not in response_payload:
+                response_payload['type'] = 'success'
+            if 'data' not in response_payload:
+                response_payload['data'] = []
+            
+            logger.info("Returning successful response")
             return jsonify({
                 'success': True,
                 'response': response_payload
-            })
+            }), 200
+            
         except Exception as gen_error:
             logger.error(f"Error generating chat response: {gen_error}", exc_info=True)
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
-            # Return success with error message (frontend expects success: true)
-            return jsonify({
-                'success': True,
-                'response': {
-                    'message': f"I apologize, but I encountered an error while processing your request. Please try again or rephrase your question. (Error: {str(gen_error)[:100]})",
-                    'type': 'error',
-                    'data': [],
-                    'total_matches': 0,
-                    'enhanced_mode': False,
-                    'confidence': 0.0,
-                    'search_analysis': {
-                        'original_query': message,
-                        'error': str(gen_error)
-                    },
-                    'pagination': {
-                        'showing': 0,
-                        'total': 0,
-                        'remaining': 0
-                    }
-                }
-            }), 200
+            safe_error_response['response']['message'] = f"I apologize, but I encountered an error while processing your request. Please try again or rephrase your question."
+            safe_error_response['response']['search_analysis']['error'] = str(gen_error)[:200]
+            safe_error_response['response']['search_analysis']['original_query'] = message[:100]
+            return jsonify(safe_error_response), 200
         
     except Exception as e:
-        logger.error(f"Unexpected error in enhanced chat endpoint: {str(e)}", exc_info=True)
+        logger.error(f"CRITICAL: Unexpected error in enhanced chat endpoint: {str(e)}", exc_info=True)
         import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        # Return success with error message (frontend expects success: true)
-        return jsonify({
-            'success': True,
-            'response': {
-                'message': 'I apologize, but I encountered an unexpected error. Please try again.',
-                'type': 'error',
-                'data': [],
-                'total_matches': 0,
-                'enhanced_mode': False,
-                'confidence': 0.0,
-                'search_analysis': {
-                    'error': str(e)
-                },
-                'pagination': {
-                    'showing': 0,
-                    'total': 0,
-                    'remaining': 0
-                }
-            }
-        }), 200  # Always return 200 so frontend doesn't treat it as network error
+        logger.error(f"CRITICAL Traceback: {traceback.format_exc()}")
+        safe_error_response['response']['search_analysis']['error'] = str(e)[:200]
+        try:
+            return jsonify(safe_error_response), 200
+        except Exception as json_error:
+            logger.error(f"CRITICAL: Failed to return JSON response: {json_error}")
+            # Last resort - return plain text
+            from flask import Response
+            return Response(
+                '{"success": true, "response": {"message": "An error occurred. Please try again.", "type": "error", "data": []}}',
+                mimetype='application/json',
+                status=200
+            )
 
 
 @ai_enhanced_bp.route('/refresh-cache', methods=['POST'])
