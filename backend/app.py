@@ -394,7 +394,9 @@ app.register_blueprint(forecasting_bp)
 # AI Assistant Routes (can be disabled via ENABLE_AI_ROUTES env var)
 # Set ENABLE_AI_ROUTES=false on Railway to disable AI routes
 # Default: enabled (for Render and local development)
-ENABLE_AI_ROUTES = os.getenv('ENABLE_AI_ROUTES', 'true').lower() in ('true', '1', 'yes', 'on')
+ENABLE_AI_ROUTES_ENV = os.getenv('ENABLE_AI_ROUTES', 'true')
+ENABLE_AI_ROUTES = ENABLE_AI_ROUTES_ENV.lower() in ('true', '1', 'yes', 'on')
+logger.info(f"ENABLE_AI_ROUTES environment variable: '{ENABLE_AI_ROUTES_ENV}' -> AI Routes: {'ENABLED' if ENABLE_AI_ROUTES else 'DISABLED'}")
 
 if ENABLE_AI_ROUTES:
     try:
