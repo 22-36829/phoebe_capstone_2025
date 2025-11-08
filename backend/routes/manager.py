@@ -1239,32 +1239,34 @@ def sustainability_dashboard():
 		metrics_query = text('''
 			with sales_data as (
 				select 
-					coalesce(sum(si.quantity * p.cost_price), 0) as cogs,
+					coalesce(sum(si.quantity * coalesce(p.cost_price, 0)), 0) as cogs,
 					coalesce(sum(si.total_price), 0) as revenue,
 					count(distinct s.id) as total_sales
 				from sale_items si
 				join sales s on s.id = si.sale_id
 				join products p on p.id = si.product_id
-				where s.pharmacy_id = :ph and s.created_at between :from and :to
+				where s.pharmacy_id = :ph and s.status = 'completed' and s.created_at between :from and :to
 			),
 			inventory_data as (
 				select 
-					coalesce(sum(i.current_stock * p.cost_price), 0) as total_inventory_value,
-					count(*) as total_products,
-					count(case when i.expiration_date is not null then 1 end) as products_with_expiry
-				from inventory i
-				join products p on p.id = i.product_id
-				where p.pharmacy_id = :ph
+					coalesce(sum(case when b.quantity > 0 then b.quantity * coalesce(b.cost_price, p.cost_price, 0) else 0 end), 0) as total_inventory_value,
+					count(distinct p.id) as total_products,
+					count(distinct case when b.expiration_date is not null then p.id end) as products_with_expiry
+				from products p
+				left join inventory_batches b on b.product_id = p.id
+				where p.pharmacy_id = :ph and p.is_active = true
 			),
 			expiry_data as (
 				select 
-					count(case when i.expiration_date <= current_date then 1 end) as expired_count,
-					count(case when i.expiration_date <= (current_date + interval '30 days') then 1 end) as expiring_soon_count,
-					coalesce(sum(case when i.expiration_date <= (current_date + interval '30 days') 
-						then i.current_stock * p.cost_price end), 0) as expiring_value
-				from inventory i
-				join products p on p.id = i.product_id
-				where p.pharmacy_id = :ph and i.expiration_date is not null
+					count(distinct case when b.expiration_date <= current_date and b.quantity > 0 then p.id end) as expired_count,
+					count(distinct case when b.expiration_date <= (current_date + interval '30 days') 
+						and b.expiration_date > current_date and b.quantity > 0 then p.id end) as expiring_soon_count,
+					coalesce(sum(case when b.expiration_date <= (current_date + interval '30 days') 
+						and b.expiration_date > current_date and b.quantity > 0
+						then b.quantity * coalesce(b.cost_price, p.cost_price, 0) else 0 end), 0) as expiring_value
+				from products p
+				join inventory_batches b on b.product_id = p.id
+				where p.pharmacy_id = :ph and p.is_active = true and b.expiration_date is not null
 			),
 			waste_data as (
 				select 
@@ -1273,7 +1275,7 @@ def sustainability_dashboard():
 				from inventory_adjustment_requests r
 				join products p on p.id = r.product_id
 				where r.pharmacy_id = :ph and r.status = 'approved'
-				and (lower(r.reason) like '%expired%' or lower(r.reason) like '%damaged%')
+				and (lower(r.reason) like '%expired%' or lower(r.reason) like '%damaged%' or lower(r.reason) like '%waste%')
 				and coalesce(r.decided_at, r.created_at) between :from and :to
 			)
 			select 
