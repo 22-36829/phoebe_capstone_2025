@@ -816,11 +816,15 @@ class EnhancedAIService:
         semantic_matches: List[Dict[str, Any]] = []
         semantic_score_map: Dict[str, float] = {}
         try:
-            # Build or load embeddings lazily based on current catalog
+            # Embeddings should already be built at startup - just use them
             if getattr(self, 'semantic_service', None) is not None:
                 self._ensure_semantic_service()
-                if self.semantic_service:
-                    self.semantic_service.load_or_build(self.medicine_database)
+                if self.semantic_service and self.semantic_service.model is not None:
+                    # Only rebuild if database changed significantly (rare)
+                    # For most requests, use pre-built embeddings
+                    if not self.semantic_service.is_ready():
+                        logger.info("Semantic embeddings not ready, rebuilding...")
+                        self.semantic_service.load_or_build(self.medicine_database)
                     results = self.semantic_service.search(query_lower, top_k=limit)
                 else:
                     results = []
