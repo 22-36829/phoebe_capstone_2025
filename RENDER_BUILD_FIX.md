@@ -38,14 +38,25 @@ pip install --upgrade pip && pip install --no-cache-dir --extra-index-url https:
 cd backend && gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 300 --worker-class sync --preload
 ```
 
-### Option 3: Update render.yaml
+### Option 3: Use render.yaml with cd command (Current Fix)
 
-The `render.yaml` file has been updated. However, Render may not support `rootDir` in YAML. 
+The `render.yaml` file has been updated to use `cd backend &&` in both build and start commands. This works regardless of Root Directory setting.
 
-**If using render.yaml doesn't work:**
-1. Remove or comment out the `rootDir: backend` line
-2. Set Root Directory manually in Render Dashboard (Option 1)
-3. OR use the build command from Option 2
+**Build Command:**
+```bash
+cd backend && pip install --upgrade pip && pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+```
+
+**Start Command:**
+```bash
+cd backend && gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 300 --worker-class sync --preload
+```
+
+This approach:
+- ✅ Works from root directory (no Root Directory setting needed)
+- ✅ Changes to backend directory before running commands
+- ✅ Uses relative path `requirements.txt` (from backend directory)
+- ✅ Compatible with render.yaml configuration
 
 ## Verify File Exists
 
