@@ -175,45 +175,92 @@ class EnhancedAIService:
         else:
             self.load_csv_data()
         
-        # Initialize semantic embedding service at startup (not lazy)
-        # This prevents memory spikes during requests
+        # Initialize semantic embedding service - skip if it takes too long to avoid worker timeout
+        # We'll load it lazily on first request instead to prevent startup blocking
         self.semantic_service = None
         self._semantic_service_initialized = False
+        self._semantic_service_loading = False
+        
+        # Try to pre-load, but with a short timeout to avoid blocking worker startup
+        # If it fails or times out, we'll load it lazily on first request
         try:
-            logger.info("Pre-loading semantic embedding service at startup...")
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Semantic service initialization timeout")
+            
+            # Set a 30 second timeout for model loading
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(30)  # 30 second timeout
+            
+            try:
+                logger.info("Attempting to pre-load semantic embedding service at startup (30s timeout)...")
+                self.semantic_service = SemanticEmbeddingService()
+                logger.info("Pre-loading SentenceTransformer model (this may take 20-40 seconds)...")
+                self.semantic_service._ensure_model()
+                if self.semantic_service.model is None:
+                    raise Exception("Failed to load SentenceTransformer model")
+                logger.info("SentenceTransformer model loaded successfully")
+                logger.info("Pre-building semantic embeddings from medicine database...")
+                self.semantic_service.load_or_build(self.medicine_database)
+                logger.info("Semantic embeddings pre-built successfully")
+                self._semantic_service_initialized = True
+                logger.info("Semantic embedding service fully initialized at startup")
+            finally:
+                signal.alarm(0)  # Cancel the alarm
+                
+        except (TimeoutError, Exception) as e:
+            signal.alarm(0)  # Cancel the alarm in case of exception
+            logger.warning(f"Could not initialize semantic service at startup (will load on first request): {e}")
+            logger.info("Semantic service will be loaded lazily on first use to avoid blocking startup")
+            self.semantic_service = None
+            self._semantic_service_initialized = False  # Allow lazy loading
+    
+    def _ensure_semantic_service(self):
+        """Ensure semantic service is available - load lazily if not initialized at startup"""
+        if self._semantic_service_initialized:
+            # Already initialized, just verify
+            if self.semantic_service is None:
+                logger.warning("Semantic service was initialized but is None - using fallback.")
+                return
+            if hasattr(self.semantic_service, 'model') and self.semantic_service.model is None:
+                logger.warning("Semantic service model not loaded - using fallback.")
+                return
+            return
+        
+        # Not initialized at startup - load lazily now (on first request)
+        if self._semantic_service_loading:
+            # Another thread/request is loading it, wait a bit
+            import time
+            max_wait = 60  # Wait up to 60 seconds
+            waited = 0
+            while waited < max_wait and not self._semantic_service_initialized:
+                time.sleep(1)
+                waited += 1
+            if not self._semantic_service_initialized:
+                logger.warning(f"Timeout waiting for semantic service to load after {waited}s")
+            return
+        
+        self._semantic_service_loading = True
+        try:
+            logger.info("Lazy loading semantic embedding service (first request)...")
             self.semantic_service = SemanticEmbeddingService()
-            # Pre-load the SentenceTransformer model immediately (not lazy)
-            logger.info("Pre-loading SentenceTransformer model...")
+            logger.info("Loading SentenceTransformer model...")
             self.semantic_service._ensure_model()
             if self.semantic_service.model is None:
                 raise Exception("Failed to load SentenceTransformer model")
-            logger.info("SentenceTransformer model loaded successfully")
-            # Pre-build embeddings at startup to avoid loading during requests
-            logger.info("Pre-building semantic embeddings from medicine database...")
+            logger.info("SentenceTransformer model loaded")
+            logger.info("Building semantic embeddings...")
             self.semantic_service.load_or_build(self.medicine_database)
-            logger.info("Semantic embeddings pre-built successfully")
+            logger.info("Semantic embeddings built successfully")
             self._semantic_service_initialized = True
-            logger.info("Semantic embedding service fully initialized at startup")
+            logger.info("Semantic embedding service initialized (lazy load)")
         except Exception as e:
-            logger.warning(f"Could not initialize semantic service at startup: {e}. Will use fallback search.")
-            logger.warning(f"Error details: {type(e).__name__}: {str(e)}", exc_info=True)
+            logger.warning(f"Could not initialize semantic service (lazy load): {e}. Using fallback search.")
             self.semantic_service = None
             self._semantic_service_initialized = True  # Mark as initialized to prevent retries
-    
-    def _ensure_semantic_service(self):
-        """Ensure semantic service is available (already initialized at startup)"""
-        # Service should already be initialized at startup with model pre-loaded
-        # This method is kept for compatibility but should not trigger any loading
-        if not self._semantic_service_initialized:
-            logger.warning("Semantic service not initialized - this should not happen. Using fallback.")
-            return
-        if self.semantic_service is None:
-            logger.warning("Semantic service is None - using fallback search.")
-            return
-        # Model should already be loaded at startup, but verify
-        if hasattr(self.semantic_service, 'model') and self.semantic_service.model is None:
-            logger.warning("Semantic service model not loaded - this should not happen. Using fallback.")
-            return
+        finally:
+            self._semantic_service_loading = False
     
     def load_csv_data(self):
         """Load and process CSV data (deprecated - use database instead)"""
