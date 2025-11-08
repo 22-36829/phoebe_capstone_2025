@@ -244,7 +244,7 @@ _enhanced_ai_service_initialized = False
 _enhanced_ai_service_init_error = None
 
 def _get_enhanced_ai_service():
-    """Initialize enhanced AI service (called at startup or on first use)"""
+    """Initialize enhanced AI service (synchronous for Railway/Gunicorn)"""
     global enhanced_ai_service, _enhanced_ai_service_initialized, _enhanced_ai_service_init_error
     if enhanced_ai_service is not None:
         return enhanced_ai_service
@@ -253,22 +253,28 @@ def _get_enhanced_ai_service():
         # Already tried to initialize, return None if it failed
         return None
     
+    import time
+    start_time = time.time()
+    
     try:
-        logger.info("Initializing enhanced AI service...")
+        logger.info("Initializing Enhanced AI Service...")
         from services.enhanced_ai_service import EnhancedAIService
         enhanced_ai_service = EnhancedAIService()
+        elapsed = time.time() - start_time
         _enhanced_ai_service_initialized = True
         _enhanced_ai_service_init_error = None
-        logger.info("Enhanced AI service initialized successfully")
+        logger.info(f"✓ Enhanced AI service initialized successfully in {elapsed:.2f}s")
         return enhanced_ai_service
     except SyntaxError as e:
+        elapsed = time.time() - start_time
         _enhanced_ai_service_init_error = f"Syntax error: {e}"
-        logger.error(f"Syntax error in enhanced_ai_service: {e}. Please check the code.")
+        logger.error(f"✗ Syntax error in enhanced_ai_service after {elapsed:.2f}s: {e}. Please check the code.")
         _enhanced_ai_service_initialized = True
         return None
     except Exception as e:
+        elapsed = time.time() - start_time
         _enhanced_ai_service_init_error = str(e)
-        logger.error(f"Failed to initialize enhanced AI service: {e}", exc_info=True)
+        logger.error(f"✗ Failed to initialize enhanced AI service after {elapsed:.2f}s: {e}", exc_info=True)
         _enhanced_ai_service_initialized = True
         return None
 

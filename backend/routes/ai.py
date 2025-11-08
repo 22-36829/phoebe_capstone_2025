@@ -160,21 +160,27 @@ class AIAssistantService:
         if self._models_loaded:
             return
         if self._load_lock:
-            # Another thread is loading, wait a bit
+            # Another process/thread is loading, wait a bit
             import time
-            for _ in range(50):  # Wait up to 5 seconds
-                time.sleep(0.1)
-                if self._models_loaded:
-                    return
-            logger.warning("Timeout waiting for models to load")
+            max_wait = 30  # Wait up to 30 seconds for Railway
+            waited = 0
+            while waited < max_wait and not self._models_loaded:
+                time.sleep(1)
+                waited += 1
+            if not self._models_loaded:
+                logger.warning(f"Timeout waiting for models to load after {waited}s")
+                raise TimeoutError("Model loading timeout")
             return
         
         self._load_lock = True
         try:
             logger.info("Loading AI models...")
+            import time
+            start_time = time.time()
             self.load_models()
+            elapsed = time.time() - start_time
             self._models_loaded = True
-            logger.info("AI models loaded successfully")
+            logger.info(f"AI models loaded successfully in {elapsed:.2f}s")
         except Exception as e:
             logger.error(f"Error loading models: {e}", exc_info=True)
             self._models_loaded = False
@@ -557,35 +563,53 @@ _ai_service_initialized = False
 _ai_service_init_error = None
 
 def initialize_ai_service():
-    """Initialize AI service at startup with models pre-loaded"""
+    """Initialize AI service at startup with models pre-loaded (synchronous for Railway/Gunicorn)"""
     global ai_service, _ai_service_initialized, _ai_service_init_error
     if _ai_service_initialized:
-        return ai_service is not None
+        return ai_service is not None and hasattr(ai_service, 'vectorizer')
+    
+    import time
+    start_time = time.time()
     
     try:
-        logger.info("Initializing AI service at startup...")
+        logger.info("=" * 60)
+        logger.info("Initializing Basic AI Service...")
+        logger.info("=" * 60)
         ai_service = AIAssistantService()
         
-        # Pre-load models at startup (not lazy)
-        logger.info("Pre-loading AI models...")
-        ai_service._ensure_models_loaded()
+        # Pre-load models at startup (synchronous, blocks until complete)
+        logger.info("Pre-loading AI models (this may take 10-30 seconds)...")
+        try:
+            ai_service._ensure_models_loaded()
+            elapsed = time.time() - start_time
+            _ai_service_initialized = True
+            _ai_service_init_error = None
+            logger.info(f"✓ Basic AI service initialized successfully in {elapsed:.2f}s")
+            logger.info("=" * 60)
+            return True
+        except Exception as model_error:
+            logger.error(f"Failed to load AI models: {model_error}", exc_info=True)
+            raise  # Re-raise to trigger fallback
         
-        _ai_service_initialized = True
-        _ai_service_init_error = None
-        logger.info("AI service initialized successfully with models loaded")
-        return True
     except Exception as e:
+        elapsed = time.time() - start_time
         _ai_service_init_error = str(e)
-        logger.error(f"Failed to initialize AI service at startup: {e}", exc_info=True)
+        logger.error(f"✗ Failed to initialize AI service after {elapsed:.2f}s: {e}", exc_info=True)
+        logger.warning("Falling back to minimal AI service (limited functionality)")
+        
         # Create a minimal service that won't crash the app
         class MinimalAIService:
             def locate_product(self, product_name, pharmacy_id):
+                logger.warning("AI service unavailable - locate_product called")
                 return []
             def search_products(self, query, pharmacy_id, limit=10):
+                logger.warning("AI service unavailable - search_products called")
                 return []
             def get_recommendations(self, query, pharmacy_id, limit=5):
+                logger.warning("AI service unavailable - get_recommendations called")
                 return []
             def get_medical_info(self, medicine_name):
+                logger.warning("AI service unavailable - get_medical_info called")
                 return {
                     'name': medicine_name,
                     'description': 'Information not available. Please consult your pharmacist.',
@@ -595,8 +619,13 @@ def initialize_ai_service():
                 }
             def _ensure_models_loaded(self):
                 pass  # No-op for minimal service
+            def train_models(self):
+                logger.warning("AI service unavailable - train_models called")
+                pass
+        
         ai_service = MinimalAIService()
         _ai_service_initialized = True
+        logger.info("=" * 60)
         return False
 
 def get_ai_service():

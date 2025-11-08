@@ -248,10 +248,14 @@ def health_ai():
             from routes.ai import get_ai_service, _ai_service_initialized, _ai_service_init_error
             if _ai_service_initialized:
                 service = get_ai_service()
-                # Check if it's the minimal service (fallback)
-                ai_status['basic'] = hasattr(service, 'vectorizer') or service is not None
+                # Check if it's the full service (has vectorizer) vs minimal service (fallback)
+                ai_status['basic'] = hasattr(service, 'vectorizer') and service.vectorizer is not None
                 if _ai_service_init_error:
                     ai_status['errors'].append(f"Basic AI: {_ai_service_init_error}")
+                elif not ai_status['basic']:
+                    ai_status['errors'].append("Basic AI: Using minimal fallback service")
+            else:
+                ai_status['errors'].append("Basic AI: Not yet initialized")
         except Exception as e:
             ai_status['errors'].append(f"Basic AI check failed: {str(e)}")
         
@@ -405,48 +409,65 @@ app.register_blueprint(inventory_bp)
 # =========================
 # INITIALIZE AI SERVICES AT STARTUP
 # =========================
-def initialize_ai_services():
-    """Initialize AI services at startup (non-blocking, but models pre-loaded)"""
-    import threading
-    import time
-    
-    def init_services():
-        try:
-            logger.info("Starting AI services initialization...")
-            
-            # Initialize basic AI service
-            try:
-                from routes.ai import initialize_ai_service
-                success = initialize_ai_service()
-                if success:
-                    logger.info("✓ Basic AI service initialized successfully")
-                else:
-                    logger.warning("✗ Basic AI service initialization failed, using fallback")
-            except Exception as e:
-                logger.error(f"Error initializing basic AI service: {e}", exc_info=True)
-            
-            # Initialize enhanced AI service (lazy, but try early)
-            try:
-                from routes.ai_enhanced import _get_enhanced_ai_service
-                service = _get_enhanced_ai_service()
-                if service:
-                    logger.info("✓ Enhanced AI service initialized successfully")
-                else:
-                    logger.warning("✗ Enhanced AI service initialization failed")
-            except Exception as e:
-                logger.error(f"Error initializing enhanced AI service: {e}", exc_info=True)
-            
-            logger.info("AI services initialization completed")
-        except Exception as e:
-            logger.error(f"Error in AI services initialization: {e}", exc_info=True)
-    
-    # Start initialization in background thread to avoid blocking
-    init_thread = threading.Thread(target=init_services, daemon=True)
-    init_thread.start()
-    logger.info("AI services initialization started in background")
+# For Railway/Gunicorn: Initialize synchronously in worker process
+# This ensures services are ready before accepting requests
+_ai_services_initializing = False
+_ai_services_initialized = False
 
-# Initialize AI services after all routes are registered
-initialize_ai_services()
+def initialize_ai_services():
+    """Initialize AI services at startup (synchronous for Railway/Gunicorn)"""
+    global _ai_services_initializing, _ai_services_initialized
+    
+    # Prevent multiple initializations
+    if _ai_services_initialized or _ai_services_initializing:
+        return
+    
+    _ai_services_initializing = True
+    try:
+        logger.info("=" * 60)
+        logger.info("Starting AI services initialization (Railway/Gunicorn mode)...")
+        logger.info("=" * 60)
+        
+        # Initialize basic AI service
+        try:
+            from routes.ai import initialize_ai_service
+            logger.info("Initializing basic AI service...")
+            success = initialize_ai_service()
+            if success:
+                logger.info("✓ Basic AI service initialized successfully")
+            else:
+                logger.warning("✗ Basic AI service initialization failed, using fallback")
+        except Exception as e:
+            logger.error(f"Error initializing basic AI service: {e}", exc_info=True)
+        
+        # Initialize enhanced AI service
+        try:
+            from routes.ai_enhanced import _get_enhanced_ai_service
+            logger.info("Initializing enhanced AI service...")
+            service = _get_enhanced_ai_service()
+            if service:
+                logger.info("✓ Enhanced AI service initialized successfully")
+            else:
+                logger.warning("✗ Enhanced AI service initialization failed")
+        except Exception as e:
+            logger.error(f"Error initializing enhanced AI service: {e}", exc_info=True)
+        
+        _ai_services_initialized = True
+        logger.info("=" * 60)
+        logger.info("AI services initialization completed")
+        logger.info("=" * 60)
+    except Exception as e:
+        logger.error(f"Critical error in AI services initialization: {e}", exc_info=True)
+        _ai_services_initialized = True  # Mark as initialized to prevent retries
+    finally:
+        _ai_services_initializing = False
+
+# Initialize AI services synchronously after all routes are registered
+# This runs in each Gunicorn worker process
+try:
+    initialize_ai_services()
+except Exception as e:
+    logger.error(f"Failed to initialize AI services: {e}", exc_info=True)
 
 def _in_reloader_process() -> bool:
 	"""Return True when running inside the active Flask reloader process."""
