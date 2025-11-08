@@ -278,17 +278,68 @@ def _get_enhanced_ai_service():
         _enhanced_ai_service_initialized = True
         return None
 
+@ai_enhanced_bp.before_request
+def log_enhanced_ai_requests():
+    """Log all requests to enhanced AI endpoints"""
+    try:
+        logger.info(f"[BEFORE_REQUEST] Enhanced AI: {request.method} {request.path}")
+        logger.info(f"[BEFORE_REQUEST] Headers: Authorization={bool(request.headers.get('Authorization'))}")
+        if request.is_json:
+            try:
+                data = request.get_json(silent=True)
+                if data:
+                    logger.info(f"[BEFORE_REQUEST] Data keys: {list(data.keys())}")
+            except Exception as e:
+                logger.warning(f"[BEFORE_REQUEST] Error parsing JSON: {e}")
+    except Exception as e:
+        logger.error(f"[BEFORE_REQUEST] Error in before_request: {e}")
+
+@ai_enhanced_bp.route('/test', methods=['GET', 'POST'])
+def test_endpoint():
+    """Test endpoint to verify routing is working"""
+    return jsonify({
+        'success': True,
+        'message': 'Enhanced AI endpoint is reachable',
+        'method': request.method,
+        'path': request.path
+    }), 200
+
 @ai_enhanced_bp.route('/chat', methods=['POST'])
 def enhanced_ai_chat():
     """Enhanced AI chat with inventory integration"""
     try:
-        logger.info("Enhanced AI chat endpoint called")
+        logger.info("=" * 80)
+        logger.info("Enhanced AI chat endpoint CALLED")
+        logger.info(f"Request method: {request.method}")
+        logger.info(f"Request path: {request.path}")
+        logger.info(f"Request remote addr: {request.remote_addr}")
+        logger.info(f"Request content type: {request.content_type}")
+        logger.info(f"Request is_json: {request.is_json}")
+        logger.info("=" * 80)
         
-        # Get request data first
-        data = request.get_json() or {}
-        message = data.get('message', '').strip()
-        user_id = data.get('user_id', 'anonymous')
-        pharmacy_id = data.get('pharmacy_id')
+        # Get request data first - handle both JSON and form data
+        try:
+            if request.is_json:
+                data = request.get_json(force=False) or {}
+            else:
+                # Try to parse as JSON even if content-type is wrong
+                try:
+                    import json
+                    data = json.loads(request.data.decode('utf-8')) if request.data else {}
+                except:
+                    data = request.form.to_dict() if request.form else {}
+            
+            logger.info(f"Parsed request data: {list(data.keys()) if data else 'empty'}")
+        except Exception as parse_error:
+            logger.error(f"Error parsing request data: {parse_error}", exc_info=True)
+            data = {}
+        
+        message = data.get('message', '').strip() if data else ''
+        user_id = data.get('user_id', 'anonymous') if data else 'anonymous'
+        pharmacy_id = data.get('pharmacy_id') if data else None
+        
+        logger.info(f"Message: '{message[:100] if message else 'empty'}...'")
+        logger.info(f"User ID: {user_id}, Pharmacy ID: {pharmacy_id}")
         
         if not message:
             logger.warning("Enhanced AI chat: No message provided")
