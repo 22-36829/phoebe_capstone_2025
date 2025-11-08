@@ -181,40 +181,13 @@ class EnhancedAIService:
         self._semantic_service_initialized = False
         self._semantic_service_loading = False
         
-        # Try to pre-load, but with a short timeout to avoid blocking worker startup
-        # If it fails or times out, we'll load it lazily on first request
-        try:
-            import signal
-            
-            def timeout_handler(signum, frame):
-                raise TimeoutError("Semantic service initialization timeout")
-            
-            # Set a 30 second timeout for model loading
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(30)  # 30 second timeout
-            
-            try:
-                logger.info("Attempting to pre-load semantic embedding service at startup (30s timeout)...")
-                self.semantic_service = SemanticEmbeddingService()
-                logger.info("Pre-loading SentenceTransformer model (this may take 20-40 seconds)...")
-                self.semantic_service._ensure_model()
-                if self.semantic_service.model is None:
-                    raise Exception("Failed to load SentenceTransformer model")
-                logger.info("SentenceTransformer model loaded successfully")
-                logger.info("Pre-building semantic embeddings from medicine database...")
-                self.semantic_service.load_or_build(self.medicine_database)
-                logger.info("Semantic embeddings pre-built successfully")
-                self._semantic_service_initialized = True
-                logger.info("Semantic embedding service fully initialized at startup")
-            finally:
-                signal.alarm(0)  # Cancel the alarm
-                
-        except (TimeoutError, Exception) as e:
-            signal.alarm(0)  # Cancel the alarm in case of exception
-            logger.warning(f"Could not initialize semantic service at startup (will load on first request): {e}")
-            logger.info("Semantic service will be loaded lazily on first use to avoid blocking startup")
-            self.semantic_service = None
-            self._semantic_service_initialized = False  # Allow lazy loading
+        # Skip semantic service initialization at startup to avoid worker timeout
+        # The model loading takes 30-60+ seconds which causes worker timeout
+        # We'll load it lazily on first request instead
+        logger.info("Skipping semantic service initialization at startup (will load on first request)")
+        logger.info("This prevents worker timeout - model loading takes 30-60+ seconds")
+        self.semantic_service = None
+        self._semantic_service_initialized = False  # Allow lazy loading
     
     def _ensure_semantic_service(self):
         """Ensure semantic service is available - load lazily if not initialized at startup"""
