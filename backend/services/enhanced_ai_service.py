@@ -201,39 +201,14 @@ class EnhancedAIService:
                 return
             return
         
-        # Not initialized at startup - load lazily now (on first request)
-        if self._semantic_service_loading:
-            # Another thread/request is loading it, wait a bit
-            import time
-            max_wait = 60  # Wait up to 60 seconds
-            waited = 0
-            while waited < max_wait and not self._semantic_service_initialized:
-                time.sleep(1)
-                waited += 1
-            if not self._semantic_service_initialized:
-                logger.warning(f"Timeout waiting for semantic service to load after {waited}s")
-            return
-        
-        self._semantic_service_loading = True
-        try:
-            logger.info("Lazy loading semantic embedding service (first request)...")
-            self.semantic_service = SemanticEmbeddingService()
-            logger.info("Loading SentenceTransformer model...")
-            self.semantic_service._ensure_model()
-            if self.semantic_service.model is None:
-                raise Exception("Failed to load SentenceTransformer model")
-            logger.info("SentenceTransformer model loaded")
-            logger.info("Building semantic embeddings...")
-            self.semantic_service.load_or_build(self.medicine_database)
-            logger.info("Semantic embeddings built successfully")
-            self._semantic_service_initialized = True
-            logger.info("Semantic embedding service initialized (lazy load)")
-        except Exception as e:
-            logger.warning(f"Could not initialize semantic service (lazy load): {e}. Using fallback search.")
-            self.semantic_service = None
-            self._semantic_service_initialized = True  # Mark as initialized to prevent retries
-        finally:
-            self._semantic_service_loading = False
+        # Not initialized at startup - skip lazy loading to prevent memory spikes
+        # Instead, just return and use fallback search methods
+        logger.info("Semantic service not initialized - using fallback search methods (keyword/fuzzy matching)")
+        logger.info("To enable semantic search, increase memory limits or use a platform with more RAM")
+        # Don't try to load - just use fallback
+        self.semantic_service = None
+        self._semantic_service_initialized = True  # Mark as initialized to prevent retries
+        return
     
     def load_csv_data(self):
         """Load and process CSV data (deprecated - use database instead)"""
