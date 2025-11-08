@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Package, AlertTriangle, CheckCircle, Clock, Plus, ChevronDown, Loader2, Trash2, Pencil, Layers, Building2, Search, Printer, FileText, Users, BarChart3, AlertCircle, CheckCircle2, XCircle } from 'lucide-react';
 import { InventoryAPI, POSAPI, ManagerAPI } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
@@ -777,7 +777,10 @@ const InventoryManagement = () => {
     if (token) loadRequests(); 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, statusFilter]);
-  useEffect(() => { if (token) loadReturns(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [token]);
+  useEffect(() => { 
+    if (token) loadReturns(); 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
   useEffect(() => { if (token) loadStaff(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [token]);
 
   // Reset to first page when filters/search change or products change
