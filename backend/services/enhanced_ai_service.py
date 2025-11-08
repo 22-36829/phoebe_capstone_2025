@@ -168,29 +168,34 @@ class EnhancedAIService:
         self.category_mappings: Dict[str, List[str]] = {}
         self.brand_mappings: Dict[str, str] = {}
         self._load_synonym_config(force=True)
-        # Initialize semantic embedding service (lazy, will load on first use)
-        self.semantic_service = None  # Will be initialized lazily
-        self._semantic_service_initialized = False
         
-        # Load data from database or CSV
+        # Load data from database or CSV first (before loading semantic service)
         if use_database:
             self.load_database_data()
         else:
             self.load_csv_data()
-        # Don't warm up semantic embeddings - load on first use to save memory
+        
+        # Initialize semantic embedding service at startup (not lazy)
+        # This prevents memory spikes during requests
+        self.semantic_service = None
+        self._semantic_service_initialized = False
+        try:
+            logger.info("Pre-loading semantic embedding service at startup...")
+            self.semantic_service = SemanticEmbeddingService()
+            self._semantic_service_initialized = True
+            logger.info("Semantic embedding service initialized successfully at startup")
+        except Exception as e:
+            logger.warning(f"Could not initialize semantic service at startup: {e}. Will use fallback search.")
+            self.semantic_service = None
+            self._semantic_service_initialized = True  # Mark as initialized to prevent retries
     
     def _ensure_semantic_service(self):
-        """Lazy initialize semantic service only when needed"""
-        if not self._semantic_service_initialized:
-            try:
-                logger.info("Lazy loading semantic embedding service...")
-                self.semantic_service = SemanticEmbeddingService()
-                self._semantic_service_initialized = True
-                logger.info("Semantic embedding service initialized")
-            except Exception as e:
-                logger.warning(f"Could not initialize semantic service: {e}. Using fallback search.")
-                self.semantic_service = None
-                self._semantic_service_initialized = True
+        """Ensure semantic service is available (already initialized at startup)"""
+        # Service should already be initialized at startup
+        # This method is kept for compatibility but should not be needed
+        if not self._semantic_service_initialized and self.semantic_service is None:
+            logger.warning("Semantic service not initialized - this should not happen. Using fallback.")
+            return
     
     def load_csv_data(self):
         """Load and process CSV data (deprecated - use database instead)"""
