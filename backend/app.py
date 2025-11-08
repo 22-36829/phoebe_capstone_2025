@@ -29,16 +29,32 @@ try:
         ssl._create_default_https_context = _create_unverified_https_context
     
     # Download NLTK data to a writable location
-    nltk_data_dir = os.path.join(os.getcwd(), 'nltk_data')
+    # Use /tmp/nltk_data in Railway (writable) or current directory
+    if os.path.exists('/tmp'):
+        nltk_data_dir = '/tmp/nltk_data'
+    else:
+        nltk_data_dir = os.path.join(os.getcwd(), 'nltk_data')
+    
     os.makedirs(nltk_data_dir, exist_ok=True)
-    nltk.data.path.append(nltk_data_dir)
+    
+    # Set NLTK_DATA environment variable so NLTK uses this directory
+    os.environ['NLTK_DATA'] = nltk_data_dir
+    nltk.data.path.insert(0, nltk_data_dir)
     
     # Download required NLTK data
     try:
-        nltk.download('punkt', quiet=True, download_dir=nltk_data_dir)
-        nltk.download('stopwords', quiet=True, download_dir=nltk_data_dir)
-        nltk.download('wordnet', quiet=True, download_dir=nltk_data_dir)
-        logger.info("NLTK data downloaded successfully")
+        # Check if data already exists to avoid re-downloading
+        punkt_path = os.path.join(nltk_data_dir, 'tokenizers', 'punkt')
+        stopwords_path = os.path.join(nltk_data_dir, 'corpora', 'stopwords')
+        wordnet_path = os.path.join(nltk_data_dir, 'corpora', 'wordnet')
+        
+        if not os.path.exists(punkt_path):
+            nltk.download('punkt', quiet=True, download_dir=nltk_data_dir)
+        if not os.path.exists(stopwords_path):
+            nltk.download('stopwords', quiet=True, download_dir=nltk_data_dir)
+        if not os.path.exists(wordnet_path):
+            nltk.download('wordnet', quiet=True, download_dir=nltk_data_dir)
+        logger.info(f"NLTK data available at {nltk_data_dir}")
     except Exception as e:
         logger.warning(f"Could not download NLTK data: {e}. Some NLP features may be limited.")
 except ImportError:

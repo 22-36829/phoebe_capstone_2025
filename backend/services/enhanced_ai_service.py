@@ -948,235 +948,221 @@ class EnhancedAIService:
     def generate_chat_response(self, query: str, show_limit: Optional[int] = None) -> Dict[str, Any]:
         """Generate a chat response for the query with structured data output"""
         try:
-            search_results = self.search_medicines(query)
-        except Exception as e:
-            logger.error(f"Error in search_medicines: {e}", exc_info=True)
-            # Return a safe fallback response
-            return {
-                'message': f"I apologize, but I encountered an error while searching for '{query}'. Please try again or rephrase your question.",
-                'type': 'error',
-                'data': [],
-                'total_matches': 0,
-                'enhanced_mode': False,
-                'confidence': 0.0,
-                'search_analysis': {
-                    'original_query': query,
-                    'error': str(e)
+            try:
+                search_results = self.search_medicines(query)
+            except Exception as e:
+                logger.error(f"Error in search_medicines: {e}", exc_info=True)
+                # Return a safe fallback response
+                return {
+                    'message': f"I apologize, but I encountered an error while searching for '{query}'. Please try again or rephrase your question.",
+                    'type': 'error',
+                    'data': [],
+                    'total_matches': 0,
+                    'enhanced_mode': False,
+                    'confidence': 0.0,
+                    'search_analysis': {
+                        'original_query': query,
+                        'error': str(e)
+                    },
+                    'pagination': {
+                        'showing': 0,
+                        'total': 0,
+                        'remaining': 0
+                    }
                 }
-            }
-        total_matches = search_results['total_matches']
-        detected_categories = search_results.get('detected_categories', [])
-        query_lower = query.lower()
+            total_matches = search_results['total_matches']
+            detected_categories = search_results.get('detected_categories', [])
+            query_lower = query.lower()
 
-        if total_matches > 0:
-            if show_limit is None:
-                show_limit = 3
-                if 'show all' in query_lower:
-                    show_limit = total_matches
-                elif 'show more' in query_lower:
-                    show_limit = min(15, total_matches)
-                elif 'show less' in query_lower:
-                    show_limit = 1
-                elif 'show 5' in query_lower or 'show five' in query_lower:
-                    show_limit = 5
-                elif 'show 10' in query_lower or 'show ten' in query_lower:
-                    show_limit = 10
-                elif 'show 20' in query_lower or 'show twenty' in query_lower:
-                    show_limit = 20
+            if total_matches > 0:
+                if show_limit is None:
+                    show_limit = 3
+                    if 'show all' in query_lower:
+                        show_limit = total_matches
+                    elif 'show more' in query_lower:
+                        show_limit = min(15, total_matches)
+                    elif 'show less' in query_lower:
+                        show_limit = 1
+                    elif 'show 5' in query_lower or 'show five' in query_lower:
+                        show_limit = 5
+                    elif 'show 10' in query_lower or 'show ten' in query_lower:
+                        show_limit = 10
+                    elif 'show 20' in query_lower or 'show twenty' in query_lower:
+                        show_limit = 20
 
-            display_results = search_results['unique_results'][:show_limit]
-            message_lines = []
+                display_results = search_results['unique_results'][:show_limit]
+                message_lines = []
 
-            header_count = '1 medicine' if total_matches == 1 else f"{total_matches} medicines"
-            message_lines.append(f"Found {header_count} matching your request:")
-            message_lines.append("")
-
-            formatted_results = []
-
-            for index, medicine in enumerate(display_results, 1):
-                quantity = medicine.get('quantity', 0)
-                price = medicine.get('unit_price', 0)
-                location = medicine.get('location', 'Location not specified')
-                stock_status_label = 'Available' if quantity > 0 else 'Out of stock'
-                stock_status_icon = '✅' if quantity > 0 else '❌'
-
-                uses = self.get_medicine_uses(medicine['name'])
-                benefits = self.get_medicine_benefits(medicine['name'])
-
-                message_lines.append(f"{index}. {medicine['name']}")
-                message_lines.append(f"   📦 Current Stock: {quantity} units")
-                message_lines.append(f"   📊 Status: {stock_status_icon} {stock_status_label}")
-                message_lines.append(f"   💰 Price: ₱{price:.2f}")
-                message_lines.append(f"   📍 Location: {location}")
-                if uses and uses != "Consult healthcare provider for specific medical uses":
-                    message_lines.append(f"   💊 Uses: {uses}")
-                if benefits and benefits != "Consult healthcare provider for specific health benefits":
-                    message_lines.append(f"   ✨ Benefits: {benefits}")
+                header_count = '1 medicine' if total_matches == 1 else f"{total_matches} medicines"
+                message_lines.append(f"Found {header_count} matching your request:")
                 message_lines.append("")
 
-                result_entry = {
-                    **medicine,
-                    'stock_status': stock_status_label,
-                    'stock_icon': stock_status_icon,
-                    'uses': uses,
-                    'benefits': benefits
+                formatted_results = []
+
+                for index, medicine in enumerate(display_results, 1):
+                    quantity = medicine.get('quantity', 0)
+                    price = medicine.get('unit_price', 0)
+                    location = medicine.get('location', 'Location not specified')
+                    stock_status_label = 'Available' if quantity > 0 else 'Out of stock'
+                    stock_status_icon = '✅' if quantity > 0 else '❌'
+
+                    uses = self.get_medicine_uses(medicine['name'])
+                    benefits = self.get_medicine_benefits(medicine['name'])
+
+                    message_lines.append(f"{index}. {medicine['name']}")
+                    message_lines.append(f"   📦 Current Stock: {quantity} units")
+                    message_lines.append(f"   📊 Status: {stock_status_icon} {stock_status_label}")
+                    message_lines.append(f"   💰 Price: ₱{price:.2f}")
+                    message_lines.append(f"   📍 Location: {location}")
+                    if uses and uses != "Consult healthcare provider for specific medical uses":
+                        message_lines.append(f"   💊 Uses: {uses}")
+                    if benefits and benefits != "Consult healthcare provider for specific health benefits":
+                        message_lines.append(f"   ✨ Benefits: {benefits}")
+                    message_lines.append("")
+
+                    result_entry = {
+                        **medicine,
+                        'stock_status': stock_status_label,
+                        'stock_icon': stock_status_icon,
+                        'uses': uses,
+                        'benefits': benefits
+                    }
+                    formatted_results.append(result_entry)
+
+                if total_matches > show_limit:
+                    message_lines.append(f"📋 Showing {show_limit} of {total_matches} results")
+                    message_lines.append("💡 Tip: Ask 'show more' for additional results or 'show 10' for a specific count.")
+                elif total_matches > 3:
+                    message_lines.append(f"📋 All {total_matches} results displayed")
+
+                if detected_categories:
+                    message_lines.append(f"🔍 Detected categories: {self._format_detected_categories(detected_categories)}")
+
+                total_displayed_quantity = sum(med.get('quantity', 0) for med in display_results)
+                if display_results:
+                    message_lines.append(f"📊 Total Stock Quantity Shown: {total_displayed_quantity:,} units")
+
+                message = "\n".join(message_lines).rstrip()
+
+                pagination_info = {
+                    'showing': len(display_results),
+                    'total': total_matches,
+                    'remaining': max(total_matches - show_limit, 0)
                 }
-                formatted_results.append(result_entry)
+                if pagination_info['remaining'] > 0:
+                    pagination_info['suggestion'] = "Ask 'show more' to load additional medicines"
 
-            if total_matches > show_limit:
-                message_lines.append(f"📋 Showing {show_limit} of {total_matches} results")
-                message_lines.append("💡 Tip: Ask 'show more' for additional results or 'show 10' for a specific count.")
-            elif total_matches > 3:
-                message_lines.append(f"📋 All {total_matches} results displayed")
+                return {
+                    'message': message,
+                    'type': 'enhanced_search_results',
+                    'data': formatted_results,
+                    'total_matches': total_matches,
+                    'show_limit': show_limit,
+                    'enhanced_mode': True,
+                    'confidence': 0.9,
+                    'search_analysis': {
+                        'original_query': query,
+                        'detected_categories': detected_categories,
+                        'search_strategies_used': self._count_strategies_used(search_results)
+                    },
+                    'pagination': pagination_info
+                }
 
-            if detected_categories:
-                message_lines.append(f"🔍 Detected categories: {self._format_detected_categories(detected_categories)}")
+            # No matches found — craft informative response
+            try:
+                query_categories = self.classify_query(query)
+            except Exception as e:
+                logger.warning(f"Error classifying query: {e}")
+                query_categories = []
+            
+            message_lines = []
+            fallback_results: List[Dict[str, Any]] = []
 
-            total_displayed_quantity = sum(med.get('quantity', 0) for med in display_results)
-            if display_results:
-                message_lines.append(f"📊 Total Stock Quantity Shown: {total_displayed_quantity:,} units")
+            if 'out_of_stock' in query_categories:
+                message_lines.append("🎉 Great news! All medicines in our inventory are currently in stock.")
+                message_lines.append("")
+                message_lines.append("📊 Current Inventory Status:")
+                message_lines.append("• Total Products: 691")
+                message_lines.append("• Total Stock Quantity: 209,450 units")
+                message_lines.append("• Available: 691 (100%)")
+                message_lines.append("• Out of Stock: 0")
+                message_lines.append("")
+                message_lines.append("✅ All medicines are ready for sale!")
+                message_lines.append("")
+                message_lines.append("💡 Try these instead:")
+                message_lines.append("• 'Show low stock items' - See items with limited quantity")
+                message_lines.append("• 'What medicines are available?' - Browse all products")
+                message_lines.append("• 'Show me stock levels' - Get detailed inventory report")
+            elif 'low_stock' in query_categories:
+                message_lines.append("📊 Low Stock Analysis:")
+                message_lines.append("")
+                message_lines.append("Currently, we have very few low-stock items in our inventory.")
+                message_lines.append("")
+                message_lines.append("💡 Try these instead:")
+                message_lines.append("• 'Show me stock levels' - See all products with quantities")
+                message_lines.append("• 'What medicines are available?' - Browse all products")
+                message_lines.append("• 'Show me out of stock items' - Check for unavailable items")
+            else:
+                message_lines.append("❌ I couldn't find exact matches in our inventory.")
+                message_lines.append("")
 
-            message = "\n".join(message_lines).rstrip()
+                if query_categories and query_categories[0] != 'others':
+                    category = query_categories[0]
+                    category_medicines = [
+                        data for data in self.medicine_database.values()
+                        if category in data.get('ai_categories', [])
+                    ]
 
-            pagination_info = {
-                'showing': len(display_results),
-                'total': total_matches,
-                'remaining': max(total_matches - show_limit, 0)
-            }
-            if pagination_info['remaining'] > 0:
-                pagination_info['suggestion'] = "Ask 'show more' to load additional medicines"
+                    if category_medicines:
+                        message_lines.append(f"💡 However, I found {len(category_medicines)} {category.replace('_', ' ')} medicines:")
+                        message_lines.append("")
+
+                        for index, medicine in enumerate(category_medicines[:5], 1):
+                            stock_icon = '✅' if medicine.get('quantity', 0) > 0 else '❌'
+                            message_lines.append(f"{index}. {stock_icon} {medicine['name']} (₱{medicine.get('unit_price', 0):.2f})")
+
+                        fallback_results = category_medicines[:5]
+                        message_lines.append("")
+                        message_lines.append("🔍 Try refining the search with brand names, dosage, or specific forms.")
+                    else:
+                        message_lines.append("🔍 Try searching for specific medicine names for better results.")
+                else:
+                    message_lines.append("💡 Search suggestions:")
+                    message_lines.append("• Try specific medicine names like 'Amlodipine', 'Aspilet', 'Ceelin'")
+                    message_lines.append("• Search by category: 'blood pressure medicines', 'vitamins', 'pain relievers'")
+                    message_lines.append("• Use symptoms: 'medicine for headache', 'fever medicine'")
+
+                    available_medicines = [
+                        data for data in self.medicine_database.values()
+                        if data.get('quantity', 0) > 0
+                    ]
+                    if available_medicines:
+                        message_lines.append("")
+                        message_lines.append("📦 Some available medicines in our inventory:")
+                        for index, medicine in enumerate(available_medicines[:5], 1):
+                            message_lines.append(f"{index}. {medicine['name']} (₱{medicine.get('unit_price', 0):.2f})")
+                        fallback_results = available_medicines[:5]
+
+            message = "\n".join(line for line in message_lines if line is not None).rstrip()
 
             return {
                 'message': message,
-                'type': 'enhanced_search_results',
-                'data': formatted_results,
-                'total_matches': total_matches,
-                'show_limit': show_limit,
+                'type': 'enhanced_no_matches',
+                'data': fallback_results,
+                'total_matches': 0,
+                'show_limit': show_limit or 3,
                 'enhanced_mode': True,
-                'confidence': 0.9,
+                'confidence': 0.8,
                 'search_analysis': {
                     'original_query': query,
                     'detected_categories': detected_categories,
                     'search_strategies_used': self._count_strategies_used(search_results)
                 },
-                'pagination': pagination_info
-            }
-
-        # No matches found — craft informative response
-        try:
-            query_categories = self.classify_query(query)
-        except Exception as e:
-            logger.warning(f"Error classifying query: {e}")
-            query_categories = []
-        
-        message_lines = []
-        fallback_results: List[Dict[str, Any]] = []
-
-        if 'out_of_stock' in query_categories:
-            message_lines.append("🎉 Great news! All medicines in our inventory are currently in stock.")
-            message_lines.append("")
-            message_lines.append("📊 Current Inventory Status:")
-            message_lines.append("• Total Products: 691")
-            message_lines.append("• Total Stock Quantity: 209,450 units")
-            message_lines.append("• Available: 691 (100%)")
-            message_lines.append("• Out of Stock: 0")
-            message_lines.append("")
-            message_lines.append("✅ All medicines are ready for sale!")
-            message_lines.append("")
-            message_lines.append("💡 Try these instead:")
-            message_lines.append("• 'Show low stock items' - See items with limited quantity")
-            message_lines.append("• 'What medicines are available?' - Browse all products")
-            message_lines.append("• 'Show me stock levels' - Get detailed inventory report")
-        elif 'low_stock' in query_categories:
-            message_lines.append("📊 Low Stock Analysis:")
-            message_lines.append("")
-            message_lines.append("Currently, we have very few low-stock items in our inventory.")
-            message_lines.append("")
-            message_lines.append("💡 Try these instead:")
-            message_lines.append("• 'Show me stock levels' - See all products with quantities")
-            message_lines.append("• 'What medicines are available?' - Browse all products")
-            message_lines.append("• 'Show me out of stock items' - Check for unavailable items")
-        else:
-            message_lines.append("❌ I couldn't find exact matches in our inventory.")
-            message_lines.append("")
-
-            if query_categories and query_categories[0] != 'others':
-                category = query_categories[0]
-                category_medicines = [
-                    data for data in self.medicine_database.values()
-                    if category in data.get('ai_categories', [])
-                ]
-
-                if category_medicines:
-                    message_lines.append(f"💡 However, I found {len(category_medicines)} {category.replace('_', ' ')} medicines:")
-                    message_lines.append("")
-
-                    for index, medicine in enumerate(category_medicines[:5], 1):
-                        stock_icon = '✅' if medicine.get('quantity', 0) > 0 else '❌'
-                        message_lines.append(f"{index}. {stock_icon} {medicine['name']} (₱{medicine.get('unit_price', 0):.2f})")
-
-                    fallback_results = category_medicines[:5]
-                    message_lines.append("")
-                    message_lines.append("🔍 Try refining the search with brand names, dosage, or specific forms.")
-                else:
-                    message_lines.append("🔍 Try searching for specific medicine names for better results.")
-            else:
-                message_lines.append("💡 Search suggestions:")
-                message_lines.append("• Try specific medicine names like 'Amlodipine', 'Aspilet', 'Ceelin'")
-                message_lines.append("• Search by category: 'blood pressure medicines', 'vitamins', 'pain relievers'")
-                message_lines.append("• Use symptoms: 'medicine for headache', 'fever medicine'")
-
-                available_medicines = [
-                    data for data in self.medicine_database.values()
-                    if data.get('quantity', 0) > 0
-                ]
-                if available_medicines:
-                    message_lines.append("")
-                    message_lines.append("📦 Some available medicines in our inventory:")
-                    for index, medicine in enumerate(available_medicines[:5], 1):
-                        message_lines.append(f"{index}. {medicine['name']} (₱{medicine.get('unit_price', 0):.2f})")
-                    fallback_results = available_medicines[:5]
-
-        message = "\n".join(line for line in message_lines if line is not None).rstrip()
-
-        return {
-            'message': message,
-            'type': 'enhanced_no_matches',
-            'data': fallback_results,
-            'total_matches': 0,
-            'show_limit': show_limit or 3,
-            'enhanced_mode': True,
-            'confidence': 0.8,
-            'search_analysis': {
-                'original_query': query,
-                'detected_categories': detected_categories,
-                'search_strategies_used': self._count_strategies_used(search_results)
-            },
-            'pagination': {
-                'showing': 0,
-                'total': 0,
-                'remaining': 0,
-                'suggestion': "Try refining your query with more specific medicine details"
-            }
-        }
-        except Exception as e:
-            # Final safety net - if anything fails, return a safe response
-            logger.error(f"Error in generate_chat_response: {e}", exc_info=True)
-            return {
-                'message': f"I apologize, but I encountered an error while processing your query '{query}'. Please try again or rephrase your question.",
-                'type': 'error',
-                'data': [],
-                'total_matches': 0,
-                'enhanced_mode': False,
-                'confidence': 0.0,
-                'search_analysis': {
-                    'original_query': query,
-                    'error': str(e)
-                },
                 'pagination': {
                     'showing': 0,
                     'total': 0,
-                    'remaining': 0
+                    'remaining': 0,
+                    'suggestion': "Try refining your query with more specific medicine details"
                 }
             }
         except Exception as e:

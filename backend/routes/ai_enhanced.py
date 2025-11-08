@@ -32,12 +32,9 @@ except (ImportError, Exception) as e:
     logger.warning(f"Could not import ai_inventory_classifier: {e}. Using fallback.")
     ai_inventory_manager = None
 
-try:
-    from services.enhanced_ai_service import enhanced_ai_service
-    logger.info("enhanced_ai_service imported successfully")
-except (ImportError, Exception) as e:
-    logger.error(f"Could not import enhanced_ai_service: {e}. This is required!")
-    enhanced_ai_service = None
+# Enhanced AI service will be initialized lazily via _get_enhanced_ai_service()
+# Don't import it directly to avoid loading SentenceTransformer at startup
+enhanced_ai_service = None
 
 from services.ai_metrics import (
     flush_metrics,
@@ -250,9 +247,12 @@ def _get_enhanced_ai_service():
         try:
             from services.enhanced_ai_service import EnhancedAIService
             enhanced_ai_service = EnhancedAIService()
-            logger.info("Enhanced AI service initialized")
+            logger.info("Enhanced AI service initialized (lazy loading)")
+        except SyntaxError as e:
+            logger.error(f"Syntax error in enhanced_ai_service: {e}. Please check the code.")
+            return None
         except Exception as e:
-            logger.error(f"Failed to initialize enhanced AI service: {e}")
+            logger.error(f"Failed to initialize enhanced AI service: {e}", exc_info=True)
             return None
     return enhanced_ai_service
 
