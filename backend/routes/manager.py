@@ -783,8 +783,8 @@ def sustainability_expiry_risk():
 		params['soon_window'] = soon_window
 		params['medium_window'] = medium_window
 
-		# Optimized query: calculate risk levels and expiry states in SQL
-		rows = conn.execute(text('''
+		# Build query with conditional filters to avoid type ambiguity
+		base_query = '''
 			with product_data as (
 				select 
 					p.id,
@@ -805,8 +805,23 @@ def sustainability_expiry_risk():
 				  and p.is_active = true
 				  and b.expiration_date is not null
 				  and (b.quantity > 0 or :include_zero)
-				  and (:category_id is null or p.category_id = :category_id)
-				  and (:search is null or lower(p.name) like :search or lower(coalesce(pc.name, '')) like :search)
+		'''
+		
+		# Add category filter if provided
+		if params.get('category_id'):
+			base_query += ' and p.category_id = :category_id'
+		else:
+			# Remove category_id from params to avoid type ambiguity
+			params.pop('category_id', None)
+		
+		# Add search filter if provided
+		if params.get('search'):
+			base_query += ' and (lower(p.name) like :search or lower(coalesce(pc.name, \'\')) like :search)'
+		else:
+			# Remove search from params to avoid type ambiguity
+			params.pop('search', None)
+		
+		base_query += '''
 				group by p.id, p.name, pc.name
 			)
 			select 
@@ -849,7 +864,9 @@ def sustainability_expiry_risk():
 					when days_to_expiry <= :medium_window then 'medium'
 					else 'low'
 				 end = :status_filter)
-		'''), {**params, 'state_filter': state_filter, 'status_filter': status_filter}).mappings().all()
+		'''
+		
+		rows = conn.execute(text(base_query), {**params, 'state_filter': state_filter, 'status_filter': status_filter}).mappings().all()
 
 		critical_risk = []
 		high_risk = []
