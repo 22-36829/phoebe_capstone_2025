@@ -781,7 +781,10 @@ const InventoryManagement = () => {
     if (token) loadReturns(); 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
-  useEffect(() => { if (token) loadStaff(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [token]);
+  useEffect(() => { 
+    if (token) loadStaff(); 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
   // Reset to first page when filters/search change or products change
   useEffect(() => { setPage(1); setPageInput(''); }, [prodQuery, categoryFilter, products]);
