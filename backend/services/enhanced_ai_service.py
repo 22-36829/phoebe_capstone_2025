@@ -595,9 +595,35 @@ class EnhancedAIService:
     
     def search_medicines(self, query: str, limit: int = 50) -> Dict:
         """Search medicines using multiple strategies with improved accuracy"""
-        self._load_synonym_config()
-        self._maybe_refresh_inventory()
+        try:
+            self._load_synonym_config()
+        except Exception as e:
+            logger.warning(f"Error loading synonym config: {e}")
+        
+        try:
+            self._maybe_refresh_inventory()
+        except Exception as e:
+            logger.warning(f"Error refreshing inventory: {e}. Using cached data.")
+            # Continue with existing data if refresh fails
+        
         query_lower = query.lower().strip()
+        
+        # Ensure medicine_database exists and is not empty
+        if not hasattr(self, 'medicine_database') or not self.medicine_database:
+            logger.error("medicine_database is empty or not initialized")
+            return {
+                'total_matches': 0,
+                'unique_results': [],
+                'detected_categories': [],
+                'exact_matches': [],
+                'direct_matches': [],
+                'word_matches': [],
+                'brand_matches': [],
+                'inventory_matches': [],
+                'category_matches': [],
+                'keyword_matches': [],
+                'fuzzy_matches': []
+            }
 
         # Basic normalization to improve fuzzy matching
         def _normalize(text: str) -> str:
