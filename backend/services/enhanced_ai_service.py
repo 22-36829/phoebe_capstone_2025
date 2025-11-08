@@ -182,19 +182,37 @@ class EnhancedAIService:
         try:
             logger.info("Pre-loading semantic embedding service at startup...")
             self.semantic_service = SemanticEmbeddingService()
+            # Pre-load the SentenceTransformer model immediately (not lazy)
+            logger.info("Pre-loading SentenceTransformer model...")
+            self.semantic_service._ensure_model()
+            if self.semantic_service.model is None:
+                raise Exception("Failed to load SentenceTransformer model")
+            logger.info("SentenceTransformer model loaded successfully")
+            # Pre-build embeddings at startup to avoid loading during requests
+            logger.info("Pre-building semantic embeddings from medicine database...")
+            self.semantic_service.load_or_build(self.medicine_database)
+            logger.info("Semantic embeddings pre-built successfully")
             self._semantic_service_initialized = True
-            logger.info("Semantic embedding service initialized successfully at startup")
+            logger.info("Semantic embedding service fully initialized at startup")
         except Exception as e:
             logger.warning(f"Could not initialize semantic service at startup: {e}. Will use fallback search.")
+            logger.warning(f"Error details: {type(e).__name__}: {str(e)}", exc_info=True)
             self.semantic_service = None
             self._semantic_service_initialized = True  # Mark as initialized to prevent retries
     
     def _ensure_semantic_service(self):
         """Ensure semantic service is available (already initialized at startup)"""
-        # Service should already be initialized at startup
-        # This method is kept for compatibility but should not be needed
-        if not self._semantic_service_initialized and self.semantic_service is None:
+        # Service should already be initialized at startup with model pre-loaded
+        # This method is kept for compatibility but should not trigger any loading
+        if not self._semantic_service_initialized:
             logger.warning("Semantic service not initialized - this should not happen. Using fallback.")
+            return
+        if self.semantic_service is None:
+            logger.warning("Semantic service is None - using fallback search.")
+            return
+        # Model should already be loaded at startup, but verify
+        if hasattr(self.semantic_service, 'model') and self.semantic_service.model is None:
+            logger.warning("Semantic service model not loaded - this should not happen. Using fallback.")
             return
     
     def load_csv_data(self):
