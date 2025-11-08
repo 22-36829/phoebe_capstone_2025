@@ -1,8 +1,42 @@
-# Copy this into Vercel Environment Variables
-# Replace YOUR_RAILWAY_URL with your actual Railway backend URL
+# ✅ Vercel Environment Variables - ONLY ONE NEEDED!
 
-REACT_APP_API_BASE=https://YOUR_RAILWAY_URL.railway.app
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Variable Name:
+REACT_APP_API_BASE
 
-# Example:
-# REACT_APP_API_BASE=https://phoebe-backend-production.up.railway.app
+# Variable Value:
+https://web-production-95ddb.up.railway.app
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# ✅ That's it! Only ONE environment variable is needed.
+
+# Instructions:
+# 1. Go to Vercel Dashboard → Your Project → Settings → Environment Variables
+# 2. Click "Add New"
+# 3. Name: REACT_APP_API_BASE
+# 4. Value: https://web-production-95ddb.up.railway.app
+# 5. Apply to: ✅ Production ✅ Preview ✅ Development (all)
+# 6. Click "Save"
+# 7. Deploy/Redeploy your project
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Quick Reference:
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Backend URL:
+https://web-production-95ddb.up.railway.app
+
+# Test Backend:
+https://web-production-95ddb.up.railway.app/api/health
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Why only one?
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# ✅ Frontend only needs to know where the backend API is
+# ✅ Auth tokens are stored in browser localStorage (no env var needed)
+# ✅ No API keys or secrets required for frontend
+# ✅ All other config is handled automatically
+
+# That's it! Simple and clean! 🎉
 

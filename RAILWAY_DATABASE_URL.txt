@@ -1,0 +1,13 @@
+# Copy this into Railway Environment Variables
+
+# Variable Name: DATABASE_URL
+# Variable Value:
+postgresql+psycopg2://postgres.xybuirzvlfuwmtcokkwm:PhoebeDrugStore01@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true
+
+# Instructions:
+# 1. Go to Railway Dashboard → Your Service → Variables
+# 2. Find or create DATABASE_URL variable
+# 3. Paste the value above
+# 4. Save
+# 5. Railway will auto-redeploy
+
