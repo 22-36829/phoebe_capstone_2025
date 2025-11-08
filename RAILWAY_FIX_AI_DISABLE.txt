@@ -1,0 +1,70 @@
+================================================================================
+RAILWAY: DISABLE AI ASSISTANT (KEEP FORECASTING)
+================================================================================
+
+PROBLEM:
+AI services are still initializing on Railway even though you want them disabled.
+
+SOLUTION:
+Set the environment variable ENABLE_AI_ROUTES=false in Railway.
+
+================================================================================
+STEP 1: Go to Railway Dashboard
+================================================================================
+1. Open: https://railway.app
+2. Select your Phoebe backend service
+3. Click "Variables" tab
+
+================================================================================
+STEP 2: Add/Update Environment Variable
+================================================================================
+Variable Name:  ENABLE_AI_ROUTES
+Variable Value: false
+
+IMPORTANT: 
+- Use lowercase "false" (not "False" or "FALSE")
+- No quotes needed
+- Railway will auto-redeploy after saving
+
+================================================================================
+STEP 3: Verify in Logs (After Redeploy)
+================================================================================
+Look for these log messages:
+
+✓ CORRECT (AI Disabled):
+   "ENABLE_AI_ROUTES environment variable: 'false' -> AI Routes: DISABLED"
+   "✗ AI Assistant routes disabled (ENABLE_AI_ROUTES=false)"
+   "Skipping AI services initialization (AI routes disabled)"
+
+✗ WRONG (AI Still Enabled):
+   "ENABLE_AI_ROUTES environment variable: 'true' -> AI Routes: ENABLED"
+   "✓ AI Assistant routes enabled"
+   "Starting AI services initialization..."
+
+================================================================================
+COMPLETE RAILWAY ENVIRONMENT VARIABLES
+================================================================================
+Copy all of these into Railway Variables tab:
+
+DATABASE_URL=postgresql+psycopg2://postgres.xybuirzvlfuwmtcokkwm:PhoebeDrugStore01@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true
+JWT_SECRET_KEY=69kdsyb6CUVLdTsUsQ0dsqK-DiTPSvhrbqtTucGpVA0
+APP_SECRET_KEY=XO5neDCr5RG9OLHuY2zjHGujZ1ypCf15xjUqXDlamBQ
+FLASK_DEBUG=0
+PORT=5000
+ENABLE_AI_ROUTES=false
+
+================================================================================
+WHAT HAPPENS AFTER FIX
+================================================================================
+✓ Forecasting routes: STILL WORKING (/api/forecasting/*)
+✓ All other routes: STILL WORKING
+✗ AI Assistant routes: DISABLED (/api/ai/*, /api/ai/enhanced/*)
+✗ AI services: NOT INITIALIZED (saves memory/startup time)
+
+================================================================================
+NOTE
+================================================================================
+- AI is deployed on Render (https://phoebe-capstone-2025.onrender.com)
+- Railway handles everything else (Forecasting, POS, Inventory, etc.)
+- This split deployment saves Railway memory and startup time
+
