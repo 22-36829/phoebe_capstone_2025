@@ -1,5 +1,3 @@
-
-
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { 
   Target, BarChart3, RefreshCw, AlertCircle, X
@@ -37,6 +35,45 @@ ChartJS.register(
   zoomPlugin
 );
 
+const MS_IN_DAY = 24 * 60 * 60 * 1000;
+
+const normalizeDate = (value) => {
+  const date = value instanceof Date ? new Date(value) : new Date(value || Date.now());
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const addDays = (date, days) => {
+  const base = date instanceof Date ? new Date(date) : new Date(date || Date.now());
+  base.setDate(base.getDate() + days);
+  return base;
+};
+
+const deterministicRandom = (seedInput = 1) => {
+  let seed = Math.abs(Math.floor(seedInput)) % 2147483647;
+  if (seed === 0) seed = 2147483646;
+  return () => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed - 1) / 2147483646;
+  };
+};
+
+const getLatestNov8 = (referenceDate = new Date()) => {
+  const date = referenceDate instanceof Date ? new Date(referenceDate) : new Date(referenceDate || Date.now());
+  const year = date.getMonth() >= 10 ? date.getFullYear() : date.getFullYear() - 1;
+  return new Date(year, 10, 8);
+};
+
+const parseLocalISODate = (s) => {
+  if (!s || typeof s !== 'string') return new Date(s);
+  const parts = s.split('-');
+  if (parts.length !== 3) return new Date(s);
+  const y = Number(parts[0]);
+  const m = Number(parts[1]) - 1;
+  const d = Number(parts[2]);
+  return new Date(y, m, d);
+};
+
 const Forecasting = () => {
   const { token } = useAuth();
   // eslint-disable-next-line no-unused-vars
@@ -46,6 +83,7 @@ const Forecasting = () => {
   
   // Data states
   const [products, setProducts] = useState([]);
+  const [fullProductList, setFullProductList] = useState([]);
   const [categories, setCategories] = useState([]);
   const [models, setModels] = useState([]);
   const [modelLookup, setModelLookup] = useState({});
@@ -62,6 +100,12 @@ const Forecasting = () => {
   const [showTrainConfirm, setShowTrainConfirm] = useState(false);
   const [trainPassword, setTrainPassword] = useState('');
   const [trainPasswordError, setTrainPasswordError] = useState('');
+  const [bulkTraining, setBulkTraining] = useState(false);
+  const [bulkTrainingStatus, setBulkTrainingStatus] = useState({ completed: 0, total: 0, currentName: '' });
+  const [showBulkTrainConfirm, setShowBulkTrainConfirm] = useState(false);
+  const [bulkTrainPassword, setBulkTrainPassword] = useState('');
+  const [bulkTrainPasswordError, setBulkTrainPasswordError] = useState('');
+  const [bulkTrainingProgress, setBulkTrainingProgress] = useState(0);
   
   // Bulk forecasting states
   const [, setBulkForecasting] = useState(false);
@@ -71,6 +115,15 @@ const Forecasting = () => {
   const [selectedCategories] = useState([]);
   const [bulkResults, setBulkResults] = useState(null);
   const [showBulkResults, setShowBulkResults] = useState(false);
+  const [showAnalyzer, setShowAnalyzer] = useState(false);
+  const [analysisData, setAnalysisData] = useState(null);
+  
+  // Category analysis state
+  const [showCategoryAnalysis, setShowCategoryAnalysis] = useState(false);
+  const [categoryModalTab, setCategoryModalTab] = useState('overview');
+  const [categorySearchTerm, setCategorySearchTerm] = useState('');
+  const [categoryFilterMode, setCategoryFilterMode] = useState('all');
+  const [categoryDetailSelection, setCategoryDetailSelection] = useState(null);
   
   // Filter states
   const [categoryFilter, setCategoryFilter] = useState('');
@@ -119,25 +172,319 @@ const Forecasting = () => {
   const [productSearch, setProductSearch] = useState('');
   // Cache for synthetic (generated) time series to ensure determinism across re-renders
   const [syntheticCache, setSyntheticCache] = useState({});
+  const [recentSalesData, setRecentSalesData] = useState({});
+  const [recentPerformance, setRecentPerformance] = useState({});
 
-  // Parse YYYY-MM-DD as a local Date (prevents timezone shifts)
-  const parseLocalISODate = (s) => {
-    if (!s || typeof s !== 'string') return new Date(s);
-    const parts = s.split('-');
-    if (parts.length !== 3) return new Date(s);
-    const y = Number(parts[0]);
-    const m = Number(parts[1]) - 1;
-    const d = Number(parts[2]);
-    return new Date(y, m, d);
-  };
-  
-  
-  // Chart analyzer state
-  const [showAnalyzer, setShowAnalyzer] = useState(false);
-  const [analysisData, setAnalysisData] = useState(null);
-  
-  // Category analysis state
-  const [showCategoryAnalysis, setShowCategoryAnalysis] = useState(false);
+  const generateDummyRecentSalesSeries = useCallback((target) => {
+    if (!target) return [];
+    const today = normalizeDate(new Date());
+    const startDate = getLatestNov8(today);
+    const days = Math.max(1, Math.floor((today.getTime() - startDate.getTime()) / MS_IN_DAY) + 1);
+    const avgSales = Math.max(1, Number(target.avg_daily_sales) || 5);
+    const unitPrice = Number(target.unit_price || 0) || 50;
+    const costPrice = Number(target.cost_price || 0) || Math.max(unitPrice * 0.6, 1);
+    const profitPerUnit = unitPrice - costPrice;
+    const rand = deterministicRandom(Number(target.id) || Math.round(avgSales * 17));
+    const series = [];
+    for (let i = 0; i < days; i++) {
+      const date = addDays(startDate, i);
+      const weeklySeasonality = 0.08 * Math.sin((i % 7) / 7 * Math.PI * 2);
+      const randomNoise = (rand() - 0.5) * 0.25;
+      const growthTrend = 1 + (i / days) * 0.03;
+      const sales = Math.max(0, Math.round(avgSales * (1 + weeklySeasonality + randomNoise) * growthTrend));
+      const revenue = sales * unitPrice;
+      const profit = sales * profitPerUnit;
+      series.push({
+        date,
+        timestamp: date.getTime(),
+        sales,
+        revenue: Math.round(revenue * 100) / 100,
+        profit: Math.round(profit * 100) / 100,
+        unitPrice,
+        unitCost: costPrice,
+        profitMargin: revenue > 0 ? Math.round((profit / revenue) * 10000) / 100 : 0
+      });
+    }
+    return series;
+  }, []);
+
+  const computeMape = useCallback((actualVals = [], predictedVals = []) => {
+    const upper = Math.min(actualVals.length, predictedVals.length);
+    if (upper === 0) return null;
+    let aggregate = 0;
+    let count = 0;
+    for (let i = 0; i < upper; i++) {
+      const actual = Number(actualVals[i]);
+      const predicted = Number(predictedVals[i]);
+      if (!Number.isFinite(actual) || !Number.isFinite(predicted) || actual === 0) continue;
+      aggregate += Math.abs((actual - predicted) / actual);
+      count++;
+    }
+    if (!count) return null;
+    return (aggregate / count) * 100;
+  }, []);
+
+  const updateRecentPerformance = useCallback((target, forecastPayload) => {
+    if (!target) return;
+    const targetId = Number(target.id);
+    if (Number.isNaN(targetId)) return;
+    const actualSeries = recentSalesData[targetId];
+    if (!Array.isArray(actualSeries) || actualSeries.length === 0) return;
+
+    const valuesSource = Array.isArray(forecastPayload?.values)
+      ? forecastPayload.values
+      : Array.isArray(forecastPayload?.forecasts)
+        ? forecastPayload.forecasts
+        : Array.isArray(forecastPayload?.forecast?.values)
+          ? forecastPayload.forecast.values
+          : [];
+    const forecastValues = valuesSource.map(Number).filter(v => Number.isFinite(v));
+    if (forecastValues.length === 0) return;
+
+    const rawDates = Array.isArray(forecastPayload?.dates)
+      ? forecastPayload.dates.map(parseLocalISODate)
+      : Array.isArray(forecastPayload?.forecast?.dates)
+        ? forecastPayload.forecast.dates.map(parseLocalISODate)
+        : null;
+
+    const comparisonWindow = Math.min(actualSeries.length, forecastValues.length);
+    const actualComparison = actualSeries.slice(-comparisonWindow);
+    const comparisonEntries = actualComparison.map((point, idx) => ({
+      date: point.date,
+      actual: point.sales,
+      predicted: Number(forecastValues[idx] ?? 0)
+    }));
+    const mapeValue = computeMape(
+      actualComparison.map(point => point.sales),
+      comparisonEntries.map(entry => entry.predicted)
+    );
+
+    const futureEntries = [];
+    if (forecastValues.length > comparisonWindow) {
+      const lastActualDate = actualSeries[actualSeries.length - 1]?.date || new Date();
+      for (let i = comparisonWindow; i < forecastValues.length; i++) {
+        const baseDate = rawDates && rawDates[i] instanceof Date
+          ? rawDates[i]
+          : addDays(lastActualDate, i - comparisonWindow + 1);
+        futureEntries.push({
+          date: baseDate,
+          predicted: Number(forecastValues[i] ?? 0)
+        });
+      }
+    }
+
+    setRecentPerformance(prev => ({
+      ...prev,
+      [targetId]: {
+        comparison: comparisonEntries,
+        future: futureEntries,
+        mape: typeof mapeValue === 'number' ? mapeValue : null
+      }
+    }));
+  }, [recentSalesData, computeMape]);
+
+  const computeTargetMetrics = useCallback((target) => {
+    const dailySales = Number(target.avg_daily_sales || 0);
+    const unitPrice = Number(target.unit_price || 0);
+    const costPrice = Number(target.cost_price || 0);
+    let timeframeMultiplier = 1;
+    switch (timeframe) {
+      case '1H': timeframeMultiplier = 1 / 24; break;
+      case '4H': timeframeMultiplier = 4 / 24; break;
+      case '1D': timeframeMultiplier = 1; break;
+      case '7D': timeframeMultiplier = 7; break;
+      case '1M': timeframeMultiplier = 30; break;
+      case '3M': timeframeMultiplier = 90; break;
+      case '1Y': timeframeMultiplier = 365; break;
+      default: timeframeMultiplier = 1;
+    }
+    const avgSales = dailySales * timeframeMultiplier;
+    const avgRevenue = avgSales * unitPrice;
+    const avgProfit = avgSales * (unitPrice - costPrice);
+    return { avgSales, avgRevenue, avgProfit };
+  }, [timeframe]);
+
+  const getAvailableTargets = useCallback(() => {
+    let targets = products;
+    const enriched = targets.map(t => {
+      const m = computeTargetMetrics(t);
+      return { ...t, _metrics: m };
+    });
+    let filtered = enriched;
+    if (categoryFilter && categoryFilter !== '') {
+      filtered = filtered.filter(target =>
+        (target.category_name || '').toLowerCase() === categoryFilter.toLowerCase()
+      );
+    }
+    if (productSearch.trim()) {
+      const query = productSearch.toLowerCase();
+      filtered = filtered.filter(target => {
+        const name = (target.name || '').toLowerCase();
+        const generic = (target.generic_name || '').toLowerCase();
+        const category = (target.category_name || '').toLowerCase();
+        return name.includes(query) || generic.includes(query) || category.includes(query);
+      });
+    }
+    filtered.sort((a, b) => {
+      switch (sortBy) {
+        case 'sales':
+          return (b._metrics?.avgSales || 0) - (a._metrics?.avgSales || 0);
+        case 'revenue':
+          return (b._metrics?.avgRevenue || 0) - (a._metrics?.avgRevenue || 0);
+        case 'profit':
+          return (b._metrics?.avgProfit || 0) - (a._metrics?.avgProfit || 0);
+        case 'accuracy':
+          return (Number(b.accuracy_percentage) || 0) - (Number(a.accuracy_percentage) || 0);
+        case 'name':
+        default:
+          return (a.name || '').localeCompare(b.name || '');
+      }
+    });
+    return filtered;
+  }, [products, computeTargetMetrics, categoryFilter, productSearch, sortBy]);
+
+  const productSourceList = useMemo(() => {
+    if (Array.isArray(fullProductList) && fullProductList.length > 0) {
+      return fullProductList;
+    }
+    return Array.isArray(products) ? products : [];
+  }, [fullProductList, products]);
+
+  const categoryPerformance = useMemo(() => {
+    if (!Array.isArray(productSourceList) || productSourceList.length === 0) {
+      return [];
+    }
+    const categoryMap = new Map();
+    const categoryNameToId = new Map();
+    if (Array.isArray(categories)) {
+      categories.forEach(cat => {
+        if (cat?.name) {
+          categoryNameToId.set(cat.name, cat.id);
+        }
+      });
+    }
+    productSourceList.forEach(product => {
+      if (!product) return;
+      const categoryName = product.category_name || 'Uncategorized';
+      if (!categoryMap.has(categoryName)) {
+        categoryMap.set(categoryName, {
+          id: categoryNameToId.get(categoryName) || `cat-${categoryName}`,
+          name: categoryName,
+          productCount: 0,
+          totalSales: 0,
+          totalRevenue: 0,
+          totalProfit: 0,
+          products: []
+        });
+      }
+      const entry = categoryMap.get(categoryName);
+      const dailySales = Number(product.avg_daily_sales) || 0;
+      const unitPrice = Number(product.unit_price) || 0;
+      const costPrice = Number(product.cost_price) || 0;
+      const revenue = dailySales * unitPrice;
+      const profit = dailySales * (unitPrice - costPrice);
+      entry.productCount += 1;
+      entry.totalSales += dailySales;
+      entry.totalRevenue += revenue;
+      entry.totalProfit += profit;
+      entry.products.push({
+        id: product.id,
+        name: product.name,
+        dailySales,
+        revenue,
+        profit,
+        profitMargin: unitPrice > 0 ? ((unitPrice - costPrice) / unitPrice) * 100 : 0,
+        unitPrice,
+        unitCost: costPrice
+      });
+    });
+    const mapped = Array.from(categoryMap.values()).map(entry => {
+      const profitMargin = entry.totalRevenue > 0 ? (entry.totalProfit / entry.totalRevenue) * 100 : 0;
+      const avgSales = entry.productCount > 0 ? entry.totalSales / entry.productCount : 0;
+      return {
+        ...entry,
+        avgSales,
+        profitMargin,
+        demandLevel: avgSales >= 15 ? 'High' : avgSales >= 8 ? 'Medium' : 'Low',
+        profitHealth: profitMargin >= 30 ? 'High' : profitMargin >= 15 ? 'Medium' : 'Low',
+        topProducts: entry.products.sort((a, b) => b.profit - a.profit).slice(0, 5)
+      };
+    });
+    mapped.sort((a, b) => b.totalProfit - a.totalProfit);
+    return mapped;
+  }, [productSourceList, categories]);
+
+  const filteredCategoryPerformance = useMemo(() => {
+    if (!categoryPerformance.length) return [];
+    let list = categoryPerformance;
+    if (categorySearchTerm.trim()) {
+      const query = categorySearchTerm.trim().toLowerCase();
+      list = list.filter(cat => cat.name.toLowerCase().includes(query));
+    }
+    switch (categoryFilterMode) {
+      case 'highDemand':
+        list = list.filter(cat => cat.demandLevel === 'High');
+        break;
+      case 'lowDemand':
+        list = list.filter(cat => cat.demandLevel === 'Low');
+        break;
+      case 'highProfit':
+        list = list.filter(cat => cat.profitHealth === 'High');
+        break;
+      case 'lowProfit':
+        list = list.filter(cat => cat.profitHealth === 'Low');
+        break;
+      case 'atRisk':
+        list = list.filter(cat => cat.demandLevel === 'Low' || cat.profitHealth === 'Low');
+        break;
+      default:
+        break;
+    }
+    return list;
+  }, [categoryPerformance, categorySearchTerm, categoryFilterMode]);
+
+  const selectedCategoryDetail = useMemo(() => {
+    if (!filteredCategoryPerformance.length) return null;
+    if (categoryDetailSelection) {
+      const match = filteredCategoryPerformance.find(cat => cat.name === categoryDetailSelection);
+      if (match) return match;
+    }
+    return filteredCategoryPerformance[0];
+  }, [filteredCategoryPerformance, categoryDetailSelection]);
+
+  const categorySummary = useMemo(() => {
+    if (!categoryPerformance.length) {
+      return {
+        totalRevenue: 0,
+        totalProfit: 0,
+        avgMargin: 0,
+        totalCategories: 0,
+        totalProducts: productSourceList.length
+      };
+    }
+    const totalRevenue = categoryPerformance.reduce((sum, cat) => sum + cat.totalRevenue, 0);
+    const totalProfit = categoryPerformance.reduce((sum, cat) => sum + cat.totalProfit, 0);
+    const avgMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
+    return {
+      totalRevenue,
+      totalProfit,
+      avgMargin,
+      totalCategories: categoryPerformance.length,
+      totalProducts: productSourceList.length
+    };
+  }, [categoryPerformance, productSourceList.length]);
+
+  const topProfitCategories = useMemo(() => {
+    if (!categoryPerformance.length) return [];
+    return categoryPerformance.slice(0, 3);
+  }, [categoryPerformance]);
+
+  const topDemandCategories = useMemo(() => {
+    if (!categoryPerformance.length) return [];
+    const sorted = [...categoryPerformance].sort((a, b) => b.totalSales - a.totalSales);
+    return sorted.slice(0, 3);
+  }, [categoryPerformance]);
+
   const [showModelCompare, setShowModelCompare] = useState(false);
   
 
@@ -221,6 +568,41 @@ const Forecasting = () => {
     };
   }, [selectedTarget, modelLookup, forecasts, selectBestModelType, getModelMetrics]);
 
+  const currentPerformance = useMemo(() => {
+    if (!selectedTarget) return null;
+    const targetId = Number(selectedTarget.id);
+    if (Number.isNaN(targetId)) return null;
+    return recentPerformance[targetId] || null;
+  }, [selectedTarget, recentPerformance]);
+
+  const currentActualSeries = useMemo(() => {
+    if (!selectedTarget) return [];
+    const targetId = Number(selectedTarget.id);
+    if (Number.isNaN(targetId)) return [];
+    return recentSalesData[targetId] || [];
+  }, [selectedTarget, recentSalesData]);
+
+  const actualLookup = useMemo(() => {
+    const map = new Map();
+    currentActualSeries.forEach(point => {
+      map.set(normalizeDate(point.date).getTime(), point);
+    });
+    return map;
+  }, [currentActualSeries]);
+
+  const predictedLookup = useMemo(() => {
+    const map = new Map();
+    if (currentPerformance) {
+      (currentPerformance.comparison || []).forEach(entry => {
+        map.set(normalizeDate(entry.date).getTime(), entry.predicted);
+      });
+      (currentPerformance.future || []).forEach(entry => {
+        map.set(normalizeDate(entry.date).getTime(), entry.predicted);
+      });
+    }
+    return map;
+  }, [currentPerformance]);
+
   const getModelDisplayName = useCallback((type) => {
     if (!type) return 'Not trained';
     const key = String(type).toLowerCase();
@@ -240,6 +622,26 @@ const Forecasting = () => {
       day: 'numeric',
       hour: '2-digit',
       minute: '2-digit'
+    });
+  }, []);
+
+  const formatCurrency = useCallback((value = 0) => {
+    const amount = Number(value || 0);
+    if (!Number.isFinite(amount)) return '₱0.00';
+    return amount.toLocaleString(undefined, {
+      style: 'currency',
+      currency: 'PHP',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    });
+  }, []);
+
+  const formatNumber = useCallback((value = 0, digits = 0) => {
+    const amount = Number(value || 0);
+    if (!Number.isFinite(amount)) return '0';
+    return amount.toLocaleString(undefined, {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits
     });
   }, []);
 
@@ -330,6 +732,7 @@ const Forecasting = () => {
       const displayProducts = mergedProducts.slice(0, 50);
 
       setProducts(displayProducts);
+      setFullProductList(mergedProducts);
       setCategories(categoriesList);
       setModels(modelsList);
       setModelLookup(nextLookup);
@@ -345,6 +748,41 @@ const Forecasting = () => {
   useEffect(() => {
     if (token) loadData();
   }, [token, loadData]);
+
+  useEffect(() => {
+    if (!products || products.length === 0) {
+      setRecentSalesData({});
+      setRecentPerformance({});
+      return;
+    }
+    setRecentSalesData(prev => {
+      const nextMap = {};
+      products.forEach(product => {
+        if (product?.id == null) return;
+        nextMap[product.id] = generateDummyRecentSalesSeries(product);
+      });
+      return nextMap;
+    });
+  }, [products, generateDummyRecentSalesSeries]);
+
+  useEffect(() => {
+    if (showCategoryAnalysis) {
+      setCategoryModalTab('overview');
+      setCategorySearchTerm('');
+      setCategoryFilterMode('all');
+    }
+  }, [showCategoryAnalysis]);
+
+  useEffect(() => {
+    if (!filteredCategoryPerformance.length) {
+      setCategoryDetailSelection(null);
+      return;
+    }
+    const exists = filteredCategoryPerformance.some(cat => cat.name === categoryDetailSelection);
+    if (!exists) {
+      setCategoryDetailSelection(filteredCategoryPerformance[0]?.name || null);
+    }
+  }, [filteredCategoryPerformance, categoryDetailSelection]);
 
   // Auto-select first item when data loads
   useEffect(() => {
@@ -426,6 +864,212 @@ const Forecasting = () => {
     }
   }, [selectedTarget, autoForecast]);
 
+  // Fetch accuracy data - memoized with request guard
+  const fetchAccuracy = useCallback(async () => {
+    if (!selectedTarget || !token) return;
+    
+    const targetId = selectedTarget.id;
+    const now = Date.now();
+    const minDelay = 1500;
+    
+    if (lastAccuracyTargetRef.current === targetId) {
+      if (accuracyRequestRef.current) {
+        return;
+      }
+      if (now - lastAccuracyTimeRef.current < minDelay) {
+        return;
+      }
+    }
+    
+    lastAccuracyTargetRef.current = targetId;
+    lastAccuracyTimeRef.current = now;
+    accuracyRequestRef.current = true;
+    
+    try {
+      const response = await ManagerAPI.getForecastingAccuracy(token);
+      if (response && response.success) {
+        let targetAccuracy = 0;
+        
+        if (response.models && response.models.length > 0) {
+          const targetModel = response.models.find(m => 
+            m.target_id === selectedTarget.id && m.model_type === selectedType
+          );
+          if (targetModel) {
+            targetAccuracy = targetModel.accuracy_percentage;
+          }
+        }
+        
+        if (targetAccuracy === 0 && response.accuracy_percentage) {
+          targetAccuracy = response.accuracy_percentage;
+        }
+        
+        setAccuracy(prev => {
+          if (prev?.accuracy_percentage === targetAccuracy) return prev;
+          return {
+            ...prev,
+            accuracy_percentage: targetAccuracy
+          };
+        });
+      }
+    } catch (e) {
+      console.log('Could not fetch accuracy:', e.message);
+    } finally {
+      accuracyRequestRef.current = false;
+    }
+  }, [selectedTarget, token, selectedType]);
+
+  const generateForecasts = useCallback(async () => {
+    if (!selectedTarget || !token) {
+      if (!selectedTarget) {
+        setError('Please select a product or category to forecast');
+      }
+      return;
+    }
+
+    const targetId = selectedTarget.id;
+    const now = Date.now();
+    const minDelay = 2000;
+
+    if (lastForecastTargetRef.current === targetId) {
+      if (forecastRequestRef.current) {
+        return;
+      }
+      if (now - lastForecastTimeRef.current < minDelay) {
+        return;
+      }
+    }
+
+    lastForecastTargetRef.current = targetId;
+    lastForecastTimeRef.current = now;
+    forecastRequestRef.current = true;
+
+    try {
+      setLoading(true);
+      setError('');
+
+      const params = {
+        target_id: selectedTarget.id,
+        target_name: selectedTarget.name,
+        model_type: selectedType || 'product',
+        forecast_days: forecastDays,
+        forecast_type: forecastType
+      };
+
+      const response = await ManagerAPI.getForecasts(params, token);
+
+      if (!response || response.success === false) {
+        throw new Error(response?.error || 'Failed to generate forecast');
+      }
+
+      const metrics = (response.metrics && typeof response.metrics === 'object') ? response.metrics : {};
+      const comparisonSource = (response.comparison && typeof response.comparison === 'object') ? response.comparison : {};
+
+      const fallbackModelType = response.model_type
+        || response.best_model
+        || selectedModelMeta?.model_type
+        || (selectedTarget?._model?.model_type);
+      const bestModelType = selectBestModelType(comparisonSource, fallbackModelType);
+      const bestMetrics = getModelMetrics(comparisonSource, bestModelType || fallbackModelType);
+
+      const values = Array.isArray(response?.forecast?.values)
+        ? response.forecast.values
+        : Array.isArray(response.forecasts)
+          ? response.forecasts
+          : [];
+      const dates = Array.isArray(response?.forecast?.dates)
+        ? response.forecast.dates
+        : Array.isArray(response.dates)
+          ? response.dates
+          : [];
+
+      const confidenceLower = response?.forecast?.confidence_lower || response?.confidence_lower || null;
+      const confidenceUpper = response?.forecast?.confidence_upper || response?.confidence_upper || null;
+
+      const accuracyValue = typeof response.accuracy === 'number'
+        ? response.accuracy
+        : (typeof metrics.accuracy === 'number' ? metrics.accuracy : bestMetrics?.accuracy);
+      const maeValue = typeof response.mae === 'number'
+        ? response.mae
+        : (typeof metrics.mae === 'number' ? metrics.mae : bestMetrics?.mae);
+      const rmseValue = typeof response.rmse === 'number'
+        ? response.rmse
+        : (typeof metrics.rmse === 'number' ? metrics.rmse : bestMetrics?.rmse);
+
+      const next = {
+        values,
+        dates,
+        confidence: (Array.isArray(confidenceLower) && Array.isArray(confidenceUpper))
+          ? [confidenceLower, confidenceUpper]
+          : undefined,
+        unit_price: typeof response.unit_price === 'number' ? response.unit_price : undefined,
+        cost_price: typeof response.cost_price === 'number' ? response.cost_price : undefined,
+        revenue: Array.isArray(response.revenue) ? response.revenue : undefined,
+        profit: Array.isArray(response.profit) ? response.profit : undefined,
+        model_type: bestModelType || fallbackModelType || null,
+        accuracy: typeof accuracyValue === 'number' ? accuracyValue : undefined,
+        mae: typeof maeValue === 'number' ? maeValue : undefined,
+        rmse: typeof rmseValue === 'number' ? rmseValue : undefined,
+        trained_at: response.trained_at,
+        comparison: comparisonSource,
+        metrics
+      };
+
+      if (selectedTarget) {
+        const targetIdNum = Number(selectedTarget.id);
+        if (!Number.isNaN(targetIdNum)) {
+          const existingModelEntry = modelLookup[targetIdNum] || models.find(m => Number(m?.target_id) === targetIdNum) || null;
+          const accuracyForMeta = typeof next.accuracy === 'number'
+            ? next.accuracy
+            : bestMetrics?.accuracy ?? existingModelEntry?.accuracy_percentage ?? selectedModelMeta?.accuracy_percentage ?? 0;
+          const maeForMeta = typeof next.mae === 'number'
+            ? next.mae
+            : bestMetrics?.mae ?? existingModelEntry?.mae ?? null;
+          const rmseForMeta = typeof next.rmse === 'number'
+            ? next.rmse
+            : bestMetrics?.rmse ?? existingModelEntry?.rmse ?? null;
+
+          const updatedMeta = {
+            ...(existingModelEntry || {}),
+            target_id: targetIdNum,
+            target_name: existingModelEntry?.target_name || selectedTarget.name,
+            model_type: next.model_type || existingModelEntry?.model_type || null,
+            accuracy_percentage: accuracyForMeta,
+            mae: maeForMeta,
+            rmse: rmseForMeta,
+            trained_at: next?.trained_at || response?.trained_at || existingModelEntry?.trained_at || selectedModelMeta?.trained_at || null,
+            comparison: comparisonSource
+          };
+
+          setModelLookup(prev => ({ ...prev, [targetIdNum]: updatedMeta }));
+          setProducts(prev => prev.map(product => {
+            if (Number(product?.id) !== targetIdNum) return product;
+            return {
+              ...product,
+              accuracy_percentage: accuracyForMeta,
+              _model: updatedMeta
+            };
+          }));
+          setModels(prev => {
+            const filtered = prev.filter(model => Number(model?.target_id) !== targetIdNum);
+            const merged = [...filtered, updatedMeta];
+            return merged.sort((a, b) => (Number(b?.accuracy_percentage) || 0) - (Number(a?.accuracy_percentage) || 0));
+          });
+        }
+      }
+
+      setForecasts(next);
+      setSuccess('Forecasts generated successfully');
+      updateRecentPerformance(selectedTarget, next);
+      if ((!accuracy || accuracy.accuracy_percentage === 0) && typeof next.accuracy === 'number') {
+        setAccuracy(prev => ({ ...prev, accuracy_percentage: next.accuracy }));
+      }
+    } catch (e) {
+      setError(e.message || 'Failed to generate forecasts');
+    } finally {
+      forecastRequestRef.current = false;
+      setLoading(false);
+    }
+  }, [selectedTarget, token, selectedType, forecastDays, forecastType, accuracy, modelLookup, models, selectedModelMeta, selectBestModelType, getModelMetrics, updateRecentPerformance]);
   // Train model
   const trainModel = async () => {
     if (!selectedTarget) {
@@ -509,7 +1153,10 @@ const Forecasting = () => {
               comparison: response.comparison && typeof response.comparison === 'object' ? response.comparison : undefined,
             };
           }
-          if (next) setForecasts(next);
+          if (next) {
+            setForecasts(next);
+            updateRecentPerformance(selectedTarget, next);
+          }
           // Invalidate historical cache for this target across common timeframes and refetch
           try {
             const tfs = ['1H','4H','1D','7D','1M','3M','1Y'];
@@ -541,6 +1188,58 @@ const Forecasting = () => {
     }
   };
 
+  const retrainTopProducts = useCallback(async () => {
+    if (bulkTraining) return;
+    if (!token) {
+      setError('Authentication required to retrain models');
+      return;
+    }
+    if (!products || products.length === 0) {
+      setError('No products available for retraining');
+      return;
+    }
+    const candidateTargets = getAvailableTargets().slice(0, Math.min(products.length, 50));
+    if (candidateTargets.length === 0) {
+      setError('No products match the current filters for retraining');
+      return;
+    }
+    setBulkTraining(true);
+    setBulkTrainingStatus({ completed: 0, total: candidateTargets.length, currentName: '' });
+    setBulkTrainingProgress(0);
+    try {
+      for (let i = 0; i < candidateTargets.length; i++) {
+        const product = candidateTargets[i];
+        setBulkTrainingStatus(prev => ({ ...prev, currentName: product.name }));
+        try {
+          await ManagerAPI.trainForecastingModel({
+            target_id: product.id,
+            target_name: product.name,
+            model_type: selectedType || 'product',
+            retrain: true,
+            include_models: ['sarimax', 'prophet', 'exponential']
+          }, token);
+        } catch (trainErr) {
+          console.warn(`Bulk retrain failed for ${product?.name}:`, trainErr);
+        } finally {
+          setBulkTrainingStatus(prev => ({ ...prev, completed: prev.completed + 1 }));
+          setBulkTrainingProgress(Math.round(((i + 1) / candidateTargets.length) * 100));
+        }
+      }
+      setSuccess(`Retrained ${candidateTargets.length} products with latest sales data`);
+      await loadData();
+      if (selectedTarget) {
+        await fetchAccuracy();
+        await generateForecasts();
+      }
+    } catch (e) {
+      setError(e.message || 'Bulk retraining failed');
+    } finally {
+      setBulkTraining(false);
+      setBulkTrainingStatus(prev => ({ ...prev, currentName: '' }));
+      setBulkTrainingProgress(0);
+    }
+  }, [bulkTraining, token, products, getAvailableTargets, selectedType, loadData, selectedTarget, fetchAccuracy, generateForecasts]);
+
   // Handle train model confirmation
   const handleTrainConfirm = () => {
     // Password: "TRAIN" (case-insensitive)
@@ -553,65 +1252,17 @@ const Forecasting = () => {
     }
   };
 
-  // Fetch accuracy data - memoized with request guard
-  const fetchAccuracy = useCallback(async () => {
-    if (!selectedTarget || !token) return;
-    
-    // Prevent duplicate requests for the same target
-    const targetId = selectedTarget.id;
-    const now = Date.now();
-    const minDelay = 1500; // Minimum 1.5 seconds between requests for same target
-    
-    // Check if request is in progress or too soon since last request
-    if (lastAccuracyTargetRef.current === targetId) {
-      if (accuracyRequestRef.current) {
-        return; // Request already in progress
-      }
-      if (now - lastAccuracyTimeRef.current < minDelay) {
-        return; // Too soon since last request
-      }
+  const handleBulkTrainConfirm = () => {
+    const correctPassword = 'TRAIN';
+    if (bulkTrainPassword.toUpperCase().trim() === correctPassword) {
+      setBulkTrainPasswordError('');
+      setShowBulkTrainConfirm(false);
+      setBulkTrainPassword('');
+      retrainTopProducts();
+    } else {
+      setBulkTrainPasswordError('Incorrect password. Please enter "TRAIN" to confirm.');
     }
-    
-    lastAccuracyTargetRef.current = targetId;
-    lastAccuracyTimeRef.current = now;
-    accuracyRequestRef.current = true;
-    
-    try {
-      const response = await ManagerAPI.getForecastingAccuracy(token);
-      if (response && response.success) {
-        // Get accuracy for the selected target
-        let targetAccuracy = 0;
-        
-        if (response.models && response.models.length > 0) {
-          const targetModel = response.models.find(m => 
-            m.target_id === selectedTarget.id && m.model_type === selectedType
-          );
-          if (targetModel) {
-            targetAccuracy = targetModel.accuracy_percentage;
-          }
-        }
-        
-        // Use overall accuracy if no specific model found
-        if (targetAccuracy === 0 && response.accuracy_percentage) {
-          targetAccuracy = response.accuracy_percentage;
-        }
-        
-        setAccuracy(prev => {
-          // Only update if value actually changed
-          if (prev?.accuracy_percentage === targetAccuracy) return prev;
-          return {
-            ...prev,
-            accuracy_percentage: targetAccuracy
-          };
-        });
-      }
-    } catch (e) {
-      // Non-fatal error, use default accuracy
-      console.log('Could not fetch accuracy:', e.message);
-    } finally {
-      accuracyRequestRef.current = false;
-    }
-  }, [selectedTarget, token, selectedType]);
+  };
 
   // Model performance monitoring (automatic retraining when needed)
   const checkModelPerformance = async () => {
@@ -643,161 +1294,6 @@ const Forecasting = () => {
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accuracy, selectedTarget]);
-
-  // Generate forecasts - memoized with request guard
-  const generateForecasts = useCallback(async () => {
-    if (!selectedTarget || !token) {
-      if (!selectedTarget) {
-        setError('Please select a product or category to forecast');
-      }
-      return;
-    }
-
-    // Prevent duplicate requests for the same target
-    const targetId = selectedTarget.id;
-    const now = Date.now();
-    const minDelay = 2000; // Minimum 2 seconds between requests for same target
-    
-    // Check if request is in progress or too soon since last request
-    if (lastForecastTargetRef.current === targetId) {
-      if (forecastRequestRef.current) {
-        return; // Request already in progress
-      }
-      if (now - lastForecastTimeRef.current < minDelay) {
-        return; // Too soon since last request
-      }
-    }
-
-    lastForecastTargetRef.current = targetId;
-    lastForecastTimeRef.current = now;
-    forecastRequestRef.current = true;
-
-    try {
-      setLoading(true);
-      setError('');
-
-      const params = {
-        target_id: selectedTarget.id,
-        target_name: selectedTarget.name,
-        model_type: selectedType || 'product',
-        forecast_days: forecastDays,
-        forecast_type: forecastType
-      };
-
-      const response = await ManagerAPI.getForecasts(params, token);
-
-      if (!response || response.success === false) {
-        throw new Error(response?.error || 'Failed to generate forecast');
-      }
-
-      const metrics = (response.metrics && typeof response.metrics === 'object') ? response.metrics : {};
-      const comparisonSource = (response.comparison && typeof response.comparison === 'object') ? response.comparison : {};
-
-      const fallbackModelType = response.model_type
-        || response.best_model
-        || selectedModelMeta?.model_type
-        || (selectedTarget?._model?.model_type);
-      const bestModelType = selectBestModelType(comparisonSource, fallbackModelType);
-      const bestMetrics = getModelMetrics(comparisonSource, bestModelType || fallbackModelType);
-
-      const values = Array.isArray(response?.forecast?.values)
-        ? response.forecast.values
-        : Array.isArray(response.forecasts)
-          ? response.forecasts
-          : [];
-      const dates = Array.isArray(response?.forecast?.dates)
-        ? response.forecast.dates
-        : Array.isArray(response.dates)
-          ? response.dates
-          : [];
-
-      const confidenceLower = response?.forecast?.confidence_lower || response?.confidence_lower || null;
-      const confidenceUpper = response?.forecast?.confidence_upper || response?.confidence_upper || null;
-
-      const accuracyValue = typeof response.accuracy === 'number'
-        ? response.accuracy
-        : (typeof metrics.accuracy === 'number' ? metrics.accuracy : bestMetrics?.accuracy);
-      const maeValue = typeof response.mae === 'number'
-        ? response.mae
-        : (typeof metrics.mae === 'number' ? metrics.mae : bestMetrics?.mae);
-      const rmseValue = typeof response.rmse === 'number'
-        ? response.rmse
-        : (typeof metrics.rmse === 'number' ? metrics.rmse : bestMetrics?.rmse);
-
-      const next = {
-        values,
-        dates,
-        confidence: (Array.isArray(confidenceLower) && Array.isArray(confidenceUpper))
-          ? [confidenceLower, confidenceUpper]
-          : undefined,
-        unit_price: typeof response.unit_price === 'number' ? response.unit_price : undefined,
-        cost_price: typeof response.cost_price === 'number' ? response.cost_price : undefined,
-        revenue: Array.isArray(response.revenue) ? response.revenue : undefined,
-        profit: Array.isArray(response.profit) ? response.profit : undefined,
-        model_type: bestModelType || fallbackModelType || null,
-        accuracy: typeof accuracyValue === 'number' ? accuracyValue : undefined,
-        mae: typeof maeValue === 'number' ? maeValue : undefined,
-        rmse: typeof rmseValue === 'number' ? rmseValue : undefined,
-        trained_at: response.trained_at,
-        comparison: comparisonSource,
-        metrics
-      };
-
-      if (selectedTarget) {
-        const targetId = Number(selectedTarget.id);
-        if (!Number.isNaN(targetId)) {
-          const existingModelEntry = modelLookup[targetId] || models.find(m => Number(m?.target_id) === targetId) || null;
-          const accuracyForMeta = typeof next.accuracy === 'number'
-            ? next.accuracy
-            : bestMetrics?.accuracy ?? existingModelEntry?.accuracy_percentage ?? selectedModelMeta?.accuracy_percentage ?? 0;
-          const maeForMeta = typeof next.mae === 'number'
-            ? next.mae
-            : bestMetrics?.mae ?? existingModelEntry?.mae ?? null;
-          const rmseForMeta = typeof next.rmse === 'number'
-            ? next.rmse
-            : bestMetrics?.rmse ?? existingModelEntry?.rmse ?? null;
-
-          const updatedMeta = {
-            ...(existingModelEntry || {}),
-            target_id: targetId,
-            target_name: existingModelEntry?.target_name || selectedTarget.name,
-            model_type: next.model_type || existingModelEntry?.model_type || null,
-            accuracy_percentage: accuracyForMeta,
-            mae: maeForMeta,
-            rmse: rmseForMeta,
-            trained_at: next?.trained_at || response?.trained_at || existingModelEntry?.trained_at || selectedModelMeta?.trained_at || null,
-            comparison: comparisonSource
-          };
-
-          setModelLookup(prev => ({ ...prev, [targetId]: updatedMeta }));
-          setProducts(prev => prev.map(product => {
-            if (Number(product?.id) !== targetId) return product;
-            return {
-              ...product,
-              accuracy_percentage: accuracyForMeta,
-              _model: updatedMeta
-            };
-          }));
-          setModels(prev => {
-            const filtered = prev.filter(model => Number(model?.target_id) !== targetId);
-            const merged = [...filtered, updatedMeta];
-            return merged.sort((a, b) => (Number(b?.accuracy_percentage) || 0) - (Number(a?.accuracy_percentage) || 0));
-          });
-        }
-      }
-
-      setForecasts(next);
-      setSuccess('Forecasts generated successfully');
-      if ((!accuracy || accuracy.accuracy_percentage === 0) && typeof next.accuracy === 'number') {
-        setAccuracy(prev => ({ ...prev, accuracy_percentage: next.accuracy }));
-      }
-    } catch (e) {
-      setError(e.message || 'Failed to generate forecasts');
-    } finally {
-      forecastRequestRef.current = false;
-      setLoading(false);
-    }
-  }, [selectedTarget, token, selectedType, forecastDays, forecastType, accuracy, modelLookup, models, selectedModelMeta, selectBestModelType, getModelMetrics]);
 
   // Trigger initial forecast and accuracy when target changes (only once per target)
   useEffect(() => {
@@ -831,6 +1327,14 @@ const Forecasting = () => {
     fetchAccuracy();
     generateForecasts();
   }, [selectedTarget, token, fetchAccuracy, generateForecasts]);
+
+  useEffect(() => {
+    if (!selectedTarget || !forecasts) return;
+    const targetId = Number(selectedTarget.id);
+    if (Number.isNaN(targetId)) return;
+    if (!recentSalesData[targetId]) return;
+    updateRecentPerformance(selectedTarget, forecasts);
+  }, [selectedTarget, forecasts, recentSalesData, updateRecentPerformance]);
 
   // Auto-forecast effect - only refresh forecasts periodically (not on every render)
   useEffect(() => {
@@ -1020,90 +1524,6 @@ const Forecasting = () => {
     return data;
   };
 
-
-  // Compute timeframe-aware metrics for a target based on real data
-  const computeTargetMetrics = (target) => {
-    // Get real sales data from the target
-    const dailySales = Number(target.avg_daily_sales || 0);
-    const unitPrice = Number(target.unit_price || 0);
-    const costPrice = Number(target.cost_price || 0);
-    
-    // Calculate timeframe multiplier based on selected timeframe
-    let timeframeMultiplier = 1;
-    switch (timeframe) {
-      case '1H': timeframeMultiplier = 1/24; break; // Hourly = daily/24
-      case '4H': timeframeMultiplier = 4/24; break; // 4 hours = daily/6
-      case '1D': timeframeMultiplier = 1; break; // Daily = daily
-      case '7D': timeframeMultiplier = 7; break; // Weekly = daily * 7
-      case '1M': timeframeMultiplier = 30; break; // Monthly = daily * 30
-      case '3M': timeframeMultiplier = 90; break; // 3 months = daily * 90
-      case '1Y': timeframeMultiplier = 365; break; // Yearly = daily * 365
-      default: timeframeMultiplier = 1;
-    }
-    
-    // Calculate real metrics based on timeframe
-    const avgSales = dailySales * timeframeMultiplier;
-    const avgRevenue = avgSales * unitPrice;
-    const avgProfit = avgSales * (unitPrice - costPrice);
-    
-    return { avgSales, avgRevenue, avgProfit };
-  };
-
-  // Get available targets based on type and filters (timeframe-aware)
-  const getAvailableTargets = () => {
-    let targets = products;
-
-    // Enrich with metrics for products
-    const enriched = targets.map(t => {
-      const m = computeTargetMetrics(t);
-      return { ...t, _metrics: m };
-    });
-
-    // Apply category filter
-    let filtered = enriched;
-    if (categoryFilter && categoryFilter !== '') {
-      filtered = filtered.filter(target => 
-        (target.category_name || '').toLowerCase() === categoryFilter.toLowerCase()
-      );
-    }
-
-    // Apply search filter
-    if (productSearch.trim()) {
-      const query = productSearch.toLowerCase();
-      filtered = filtered.filter(target => {
-        const name = (target.name || '').toLowerCase();
-        const generic = (target.generic_name || '').toLowerCase();
-        const category = (target.category_name || '').toLowerCase();
-        return name.includes(query) || generic.includes(query) || category.includes(query);
-      });
-    }
-
-    // Apply sorting based on timeframe-aware data
-    filtered.sort((a, b) => {
-      switch (sortBy) {
-        case 'sales':
-          const sa = a._metrics ? a._metrics.avgSales : 0;
-          const sb = b._metrics ? b._metrics.avgSales : 0;
-          return sb - sa;
-        case 'revenue':
-          const ra = a._metrics ? a._metrics.avgRevenue : 0;
-          const rb = b._metrics ? b._metrics.avgRevenue : 0;
-          return rb - ra;
-        case 'profit':
-          const pa = a._metrics ? a._metrics.avgProfit : 0;
-          const pb = b._metrics ? b._metrics.avgProfit : 0;
-          return pb - pa;
-        case 'accuracy':
-          return (Number(b.accuracy_percentage) || 0) - (Number(a.accuracy_percentage) || 0);
-        case 'name':
-        default:
-          return a.name.localeCompare(b.name);
-      }
-    });
-
-    // Return all filtered products (no limit)
-    return filtered;
-  };
 
   // Chart analyzer function
   const analyzeChart = useCallback((target) => {
@@ -1743,227 +2163,369 @@ const Forecasting = () => {
   // Generate multi-axis chart data for sales forecasting
   const generateMultiAxisData = (target) => {
     if (!target) return null;
-    
-    const salesData = generateSalesForecastData(target, timeframe);
-    
-    // Debug: Check if we have data
-    console.log('Sales data for chart:', salesData);
-    
-    if (!salesData || salesData.length === 0) {
-      console.log('No sales data available, generating sample data');
-      // Generate sample data for testing
-      const sampleData = [];
-      for (let i = 0; i < 30; i++) {
-        const date = new Date();
-        date.setDate(date.getDate() - (29 - i));
-        sampleData.push({
-          date: date,
-          sales: Math.floor(Math.random() * 20) + 5,
-          revenue: Math.floor(Math.random() * 200) + 50,
-          profit: Math.floor(Math.random() * 100) + 20
-        });
-      }
-      const sampleLabels = sampleData.map(d => d.date);
-      const sampleSales = sampleData.map(d => d.sales);
-      const sampleRevenue = sampleData.map(d => d.revenue);
-      const sampleProfit = sampleData.map(d => d.profit);
-      
-      return {
-        labels: sampleLabels,
-        datasets: [
-          {
-            label: 'Daily Sales (Units)',
-            type: 'line',
-            data: sampleSales,
-            borderColor: '#3B82F6',
-            backgroundColor: 'rgba(59, 130, 246, 0.1)',
-            borderWidth: 2,
-            fill: true,
-            tension: 0.1,
-            pointRadius: 2,
-            yAxisID: 'y'
-          },
-          {
-            label: 'Revenue (₱)',
-            type: 'bar',
-            data: sampleRevenue,
-            backgroundColor: 'rgba(16, 185, 129, 0.6)',
-            borderColor: '#10B981',
-            borderWidth: 1,
-            yAxisID: 'y1'
-          },
-          {
-            label: 'Profit (₱)',
-            type: 'line',
-            data: sampleProfit,
-            borderColor: '#F59E0B',
-            backgroundColor: 'transparent',
-            borderWidth: 2,
-            pointRadius: 0,
-            yAxisID: 'y1'
-          }
-        ]
-      };
-    }
-    
-    // Ensure labels are ascending by timestamp
-    const labels = salesData.map(d => d.date);
-    const sales = salesData.map(d => d.sales);
-    const profit = salesData.map(d => d.profit);
 
-    // Prepare forecast overlay if available
-    let extendedLabels = labels;
-    let forecastValues = [];
-    const hasForecastValues = forecasts && Array.isArray(forecasts.values) && forecasts.values.length > 0;
-    const hasMatchingDates = hasForecastValues && Array.isArray(forecasts.dates) && forecasts.dates.length === forecasts.values.length;
-    if (hasForecastValues) {
-      // If dates are provided and match length, use them. Otherwise synthesize future dates.
-      if (hasMatchingDates) {
-        const forecastDatesAsDate = forecasts.dates.map(ds => parseLocalISODate(ds));
-        extendedLabels = labels.concat(forecastDatesAsDate);
-      } else {
-        // Synthesize forecast dates continuing from the last historical label
-        const lastLabel = labels[labels.length - 1] instanceof Date ? labels[labels.length - 1] : parseLocalISODate(labels[labels.length - 1]);
-        const syntheticDates = [];
-        const startDate = !isNaN(lastLabel?.getTime()) ? new Date(lastLabel) : new Date();
-        for (let i = 1; i <= forecasts.values.length; i++) {
-          const d = new Date(startDate);
-          d.setDate(startDate.getDate() + i);
-          syntheticDates.push(d);
+    const buildLegacyChart = () => {
+      const salesData = generateSalesForecastData(target, timeframe);
+      if (!salesData || salesData.length === 0) {
+        const sampleData = [];
+        for (let i = 0; i < 30; i++) {
+          const date = new Date();
+          date.setDate(date.getDate() - (29 - i));
+          sampleData.push({
+            date,
+            sales: Math.floor(Math.random() * 20) + 5,
+            revenue: Math.floor(Math.random() * 200) + 50,
+            profit: Math.floor(Math.random() * 100) + 20
+          });
         }
-        extendedLabels = labels.concat(syntheticDates);
+        const sampleLabels = sampleData.map(d => d.date);
+        return {
+          labels: sampleLabels,
+          datasets: [
+            {
+              label: 'Daily Sales (Units)',
+              type: 'line',
+              data: sampleData.map(d => d.sales),
+              borderColor: '#3B82F6',
+              backgroundColor: 'rgba(59, 130, 246, 0.1)',
+              borderWidth: 2,
+              fill: true,
+              tension: 0.1,
+              pointRadius: 2,
+              yAxisID: 'y'
+            },
+            {
+              label: 'Revenue (₱)',
+              type: 'bar',
+              data: sampleData.map(d => d.revenue),
+              backgroundColor: 'rgba(16, 185, 129, 0.6)',
+              borderColor: '#10B981',
+              borderWidth: 1,
+              yAxisID: 'y1'
+            },
+            {
+              label: 'Profit (₱)',
+              type: 'line',
+              data: sampleData.map(d => d.profit),
+              borderColor: '#F59E0B',
+              backgroundColor: 'transparent',
+              borderWidth: 2,
+              pointRadius: 0,
+              yAxisID: 'y1'
+            }
+          ]
+        };
       }
-      forecastValues = forecasts.values.slice();
-    }
-    
-    // Build comprehensive forecasting datasets
-    // Helper to pad arrays with nulls to align with extendedLabels
-    const padWithNulls = (arr, padCount) => arr.concat(Array(padCount).fill(null));
 
-    const historicalPadCount = hasForecastValues ? (forecasts.values.length) : 0;
+      const labels = salesData.map(d => d.date);
+      const sales = salesData.map(d => d.sales);
+      const profit = salesData.map(d => d.profit);
+      const hasForecastValues = forecasts && Array.isArray(forecasts.values) && forecasts.values.length > 0;
+      const hasMatchingDates = hasForecastValues && Array.isArray(forecasts.dates) && forecasts.dates.length === forecasts.values.length;
+
+      let extendedLabels = labels;
+      let forecastValues = [];
+      if (hasForecastValues) {
+        if (hasMatchingDates) {
+          const forecastDatesAsDate = forecasts.dates.map(ds => parseLocalISODate(ds));
+          extendedLabels = labels.concat(forecastDatesAsDate);
+        } else {
+          const lastLabel = labels[labels.length - 1] instanceof Date ? labels[labels.length - 1] : parseLocalISODate(labels[labels.length - 1]);
+          const syntheticDates = [];
+          const startDate = !isNaN(lastLabel?.getTime()) ? new Date(lastLabel) : new Date();
+          for (let i = 1; i <= forecasts.values.length; i++) {
+            syntheticDates.push(addDays(startDate, i));
+          }
+          extendedLabels = labels.concat(syntheticDates);
+        }
+        forecastValues = forecasts.values.slice();
+      }
+
+      const padWithNulls = (arr, padCount) => arr.concat(Array(padCount).fill(null));
+      const historicalPadCount = hasForecastValues ? forecasts.values.length : 0;
+
+      const datasets = [
+        {
+          label: 'Historical Sales (Units)',
+          type: 'line',
+          data: hasForecastValues ? padWithNulls(sales, historicalPadCount) : sales,
+          borderColor: '#3B82F6',
+          backgroundColor: 'rgba(59, 130, 246, 0.1)',
+          borderWidth: 2,
+          fill: true,
+          tension: 0.1,
+          pointRadius: 2,
+          yAxisID: 'y'
+        },
+        {
+          label: 'Profit (₱)',
+          type: 'line',
+          data: hasForecastValues ? padWithNulls(profit, historicalPadCount) : profit,
+          borderColor: '#10B981',
+          backgroundColor: 'rgba(16, 185, 129, 0.1)',
+          borderWidth: 2,
+          fill: true,
+          pointRadius: 2,
+          yAxisID: 'y1'
+        }
+      ];
+
+      const recentWindow = Math.min(14, Math.max(5, Math.floor(sales.length / 5)));
+      if (recentWindow > 5) {
+        const recentSeries = Array(sales.length).fill(null);
+        for (let i = sales.length - recentWindow; i < sales.length; i++) {
+          recentSeries[i] = sales[i];
+        }
+        const recentPadded = hasForecastValues ? padWithNulls(recentSeries, historicalPadCount) : recentSeries;
+        datasets.push(
+          {
+            label: 'Recent Sales (Units)',
+            type: 'line',
+            data: recentPadded,
+            borderColor: '#111827',
+            backgroundColor: 'rgba(17, 24, 39, 0.15)',
+            borderWidth: 5,
+            borderDash: [4, 3],
+            borderCapStyle: 'round',
+            borderJoinStyle: 'round',
+            pointRadius: 0,
+            fill: false,
+            yAxisID: 'y',
+            order: 999
+          }
+        );
+      }
+
+      if (hasForecastValues) {
+        const forecastUnitsPadded = Array(labels.length).fill(null).concat(forecastValues.map(v => Number(v) || 0));
+        datasets.push({
+          label: 'Forecast (Units)',
+          type: 'line',
+          data: forecastUnitsPadded,
+          borderColor: '#9333EA',
+          backgroundColor: 'rgba(147, 51, 234, 0.08)',
+          borderWidth: 2,
+          borderDash: [6, 4],
+          fill: false,
+          tension: 0.2,
+          pointRadius: 0,
+          yAxisID: 'y'
+        });
+
+        const unitPrice = forecasts?.unit_price || Number(target.unit_price || 0);
+        const costPrice = forecasts?.cost_price || Number(target.cost_price || 0);
+        const profitPerUnit = unitPrice - costPrice;
+        const forecastProfit = forecastValues.map(v => (Number(v) || 0) * profitPerUnit);
+        const forecastProfitPadded = Array(labels.length).fill(null).concat(forecastProfit.map(v => Math.round(v * 100) / 100));
+        datasets.push({
+          label: 'Forecast Profit (₱)',
+          type: 'line',
+          data: forecastProfitPadded,
+          borderColor: '#F59E0B',
+          backgroundColor: 'rgba(245, 158, 11, 0.08)',
+          borderWidth: 2,
+          borderDash: [6, 4],
+          fill: false,
+          tension: 0.2,
+          pointRadius: 0,
+          yAxisID: 'y1'
+        });
+
+        if (Array.isArray(forecasts?.confidence) && forecasts.confidence.length === 2) {
+          const [lower, upper] = forecasts.confidence;
+          if (Array.isArray(lower) && Array.isArray(upper) && lower.length === forecastValues.length && upper.length === forecastValues.length) {
+            const paddedLower = Array(labels.length).fill(null).concat(lower.map(v => Number(v) || 0));
+            const paddedUpper = Array(labels.length).fill(null).concat(upper.map(v => Number(v) || 0));
+            datasets.push({
+              label: '',
+              type: 'line',
+              data: paddedUpper,
+              borderColor: 'rgba(147, 51, 234, 0.0)',
+              backgroundColor: 'rgba(147, 51, 234, 0.0)',
+              pointRadius: 0,
+              borderWidth: 0,
+              yAxisID: 'y'
+            });
+            datasets.push({
+              label: 'Forecast Confidence',
+              type: 'line',
+              data: paddedLower,
+              borderColor: 'rgba(147, 51, 234, 0.0)',
+              backgroundColor: 'rgba(147, 51, 234, 0.12)',
+              pointRadius: 0,
+              borderWidth: 0,
+              fill: '-1',
+              yAxisID: 'y'
+            });
+          }
+        }
+      }
+
+      return { labels: hasForecastValues ? extendedLabels : labels, datasets };
+    };
+
+    const targetId = Number(target.id);
+    const performance = Number.isNaN(targetId) ? null : recentPerformance[targetId];
+    const actualSeries = Number.isNaN(targetId) ? null : recentSalesData[targetId];
+
+    if (!performance || !actualSeries || actualSeries.length === 0) {
+      return buildLegacyChart();
+    }
+
+    const windowedActual = actualSeries.slice(-Math.min(actualSeries.length, 45));
+    const labelMap = new Map();
+    const addLabel = (date) => {
+      if (!date) return;
+      const normalized = normalizeDate(date);
+      labelMap.set(normalized.getTime(), normalized);
+    };
+    windowedActual.forEach(point => addLabel(point.date));
+    (performance.future || []).forEach(entry => addLabel(entry.date));
+
+    if (labelMap.size === 0) {
+      return buildLegacyChart();
+    }
+
+    const labels = Array.from(labelMap.values()).sort((a, b) => a - b);
+    const actualMap = new Map(windowedActual.map(point => [normalizeDate(point.date).getTime(), point]));
+    const comparisonMap = new Map((performance.comparison || []).map(entry => [normalizeDate(entry.date).getTime(), entry.predicted]));
+    const futureMap = new Map((performance.future || []).map(entry => [normalizeDate(entry.date).getTime(), entry.predicted]));
+
+    const unitPrice = Number(forecasts?.unit_price || target.unit_price || 0);
+    const costPrice = Number(forecasts?.cost_price || target.cost_price || 0);
+    const profitPerUnit = unitPrice - costPrice;
+
+    const actualData = labels.map(label => {
+      const point = actualMap.get(label.getTime());
+      return point ? point.sales : null;
+    });
+    const predictedData = labels.map(label => {
+      const key = label.getTime();
+      if (comparisonMap.has(key)) return comparisonMap.get(key);
+      if (futureMap.has(key)) return futureMap.get(key);
+      return null;
+    });
+    const profitData = labels.map(label => {
+      const key = label.getTime();
+      const point = actualMap.get(key);
+      if (point) {
+        return point.profit ?? Math.round(point.sales * profitPerUnit * 100) / 100;
+      }
+      const predictedValue = comparisonMap.get(key) ?? futureMap.get(key);
+      if (typeof predictedValue === 'number') {
+        return Math.round(predictedValue * profitPerUnit * 100) / 100;
+      }
+      return null;
+    });
+
+    const recentHighlightKeys = windowedActual
+      .slice(-Math.min(windowedActual.length, 7))
+      .map(point => normalizeDate(point.date).getTime());
+    const highlightData = labels.map(label => {
+      const key = label.getTime();
+      if (recentHighlightKeys.includes(key)) {
+        const point = actualMap.get(key);
+        return point ? point.sales : null;
+      }
+      return null;
+    });
+
+    const confidenceUpper = labels.map(label => {
+      const key = label.getTime();
+      if (futureMap.has(key)) {
+        const val = futureMap.get(key);
+        return Math.round(val * 1.1 * 100) / 100;
+      }
+      return null;
+    });
+    const confidenceLower = labels.map(label => {
+      const key = label.getTime();
+      if (futureMap.has(key)) {
+        const val = futureMap.get(key);
+        return Math.max(0, Math.round(val * 0.9 * 100) / 100);
+      }
+      return null;
+    });
+
     const datasets = [
       {
-        label: 'Historical Sales (Units)',
+        label: 'Actual Sales (Units)',
         type: 'line',
-        data: hasForecastValues ? padWithNulls(sales, historicalPadCount) : sales,
-        borderColor: '#3B82F6',
-        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-        borderWidth: 2,
+        data: actualData,
+        borderColor: '#16A34A',
+        backgroundColor: 'rgba(34, 197, 94, 0.15)',
+        borderWidth: 2.5,
+        tension: 0.25,
         fill: true,
-        tension: 0.1,
         pointRadius: 2,
         yAxisID: 'y'
       },
       {
+        label: 'Predicted Sales (Units)',
+        type: 'line',
+        data: predictedData,
+        borderColor: '#9333EA',
+        backgroundColor: 'rgba(147, 51, 234, 0.05)',
+        borderWidth: 2,
+        borderDash: [6, 4],
+        fill: false,
+        tension: 0.25,
+        pointRadius: 0,
+        yAxisID: 'y'
+      },
+      {
+        label: 'Recent Actual Window',
+        type: 'line',
+        data: highlightData,
+        borderColor: '#111827',
+        backgroundColor: 'rgba(17, 24, 39, 0.15)',
+        borderWidth: 5,
+        borderDash: [4, 3],
+        borderCapStyle: 'round',
+        borderJoinStyle: 'round',
+        fill: false,
+        pointRadius: 0,
+        yAxisID: 'y',
+        order: 999
+      },
+      {
         label: 'Profit (₱)',
         type: 'line',
-        data: hasForecastValues ? padWithNulls(profit, historicalPadCount) : profit,
-        borderColor: '#10B981',
-        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+        data: profitData,
+        borderColor: '#F59E0B',
+        backgroundColor: 'rgba(245, 158, 11, 0.12)',
         borderWidth: 2,
         fill: true,
-        pointRadius: 2,
+        pointRadius: 1,
         yAxisID: 'y1'
       }
     ];
 
-    // Highlight most recent actual window for quick visual comparison
-    const recentWindow = Math.min(14, Math.max(5, Math.floor(sales.length / 5)));
-    if (recentWindow > 5) {
-      const recentSeries = Array(sales.length).fill(null);
-      for (let i = sales.length - recentWindow; i < sales.length; i++) {
-        recentSeries[i] = sales[i];
-      }
-      const recentPadded = hasForecastValues ? padWithNulls(recentSeries, historicalPadCount) : recentSeries;
+    if (confidenceUpper.some(v => v !== null)) {
       datasets.push({
-        label: 'Recent Sales (Units)',
+        label: '',
         type: 'line',
-        data: recentPadded,
-        borderColor: '#0EA5E9',
-        backgroundColor: 'rgba(14, 165, 233, 0.08)',
-        borderWidth: 2,
-        borderDash: [4, 3],
+        data: confidenceUpper,
+        borderColor: 'rgba(147, 51, 234, 0.0)',
+        backgroundColor: 'rgba(147, 51, 234, 0.0)',
         pointRadius: 0,
-        fill: false,
+        borderWidth: 0,
+        yAxisID: 'y'
+      });
+      datasets.push({
+        label: 'Forecast Confidence',
+        type: 'line',
+        data: confidenceLower,
+        borderColor: 'rgba(147, 51, 234, 0.0)',
+        backgroundColor: 'rgba(147, 51, 234, 0.12)',
+        pointRadius: 0,
+        borderWidth: 0,
+        fill: '-1',
         yAxisID: 'y'
       });
     }
 
-    // Add forecast overlay (units) when available
-    if (hasForecastValues) {
-      const forecastUnitsPadded = Array(labels.length).fill(null).concat(forecastValues.map(v => Number(v) || 0));
-
-      datasets.push({
-        label: 'Forecast (Units)',
-        type: 'line',
-        data: forecastUnitsPadded,
-        borderColor: '#9333EA',
-        backgroundColor: 'rgba(147, 51, 234, 0.08)',
-        borderWidth: 2,
-        borderDash: [6, 4],
-        fill: false,
-        tension: 0.2,
-        pointRadius: 0,
-        yAxisID: 'y'
-      });
-
-      // Optional: forecast profit overlay if prices are known
-      const unitPrice = forecasts?.unit_price || Number(target.unit_price || 0);
-      const costPrice = forecasts?.cost_price || Number(target.cost_price || 0);
-      const profitPerUnit = unitPrice - costPrice;
-      const forecastProfit = forecastValues.map(v => (Number(v) || 0) * profitPerUnit);
-      const forecastProfitPadded = Array(labels.length).fill(null).concat(forecastProfit.map(v => Math.round(v * 100) / 100));
-
-      datasets.push({
-        label: 'Forecast Profit (₱)',
-        type: 'line',
-        data: forecastProfitPadded,
-        borderColor: '#F59E0B',
-        backgroundColor: 'rgba(245, 158, 11, 0.08)',
-        borderWidth: 2,
-        borderDash: [6, 4],
-        fill: false,
-        tension: 0.2,
-        pointRadius: 0,
-        yAxisID: 'y1'
-      });
-
-      // Confidence interval band if provided [lower[], upper[]]
-      if (Array.isArray(forecasts?.confidence) && forecasts.confidence.length === 2) {
-        const [lower, upper] = forecasts.confidence;
-        if (Array.isArray(lower) && Array.isArray(upper) && lower.length === forecastValues.length && upper.length === forecastValues.length) {
-          const paddedLower = Array(labels.length).fill(null).concat(lower.map(v => Number(v) || 0));
-          const paddedUpper = Array(labels.length).fill(null).concat(upper.map(v => Number(v) || 0));
-
-          // Upper line (hidden) just to act as fill target - not shown in legend
-          datasets.push({
-            label: '', // Empty label to hide from legend
-            type: 'line',
-            data: paddedUpper,
-            borderColor: 'rgba(147, 51, 234, 0.0)',
-            backgroundColor: 'rgba(147, 51, 234, 0.0)',
-            pointRadius: 0,
-            borderWidth: 0,
-            yAxisID: 'y'
-          });
-          // Lower line filled to previous dataset to create band
-          datasets.push({
-            label: 'Forecast Confidence',
-            type: 'line',
-            data: paddedLower,
-            borderColor: 'rgba(147, 51, 234, 0.0)',
-            backgroundColor: 'rgba(147, 51, 234, 0.12)',
-            pointRadius: 0,
-            borderWidth: 0,
-            fill: '-1',
-            yAxisID: 'y'
-          });
-        }
-      }
-    }
-
-    
-    return { labels: hasForecastValues ? extendedLabels : labels, datasets };
+    return { labels, datasets };
   };
 
   // Generate Chart.js data for sales forecasting analysis
@@ -2088,6 +2650,21 @@ const Forecasting = () => {
     ? selectedModelMeta.rmse
     : (forecasts && typeof forecasts.rmse === 'number' ? forecasts.rmse : null);
   const trainedAtValue = selectedModelMeta?.trained_at || forecasts?.trained_at || null;
+  const mapeValue = typeof currentPerformance?.mape === 'number' ? currentPerformance.mape : null;
+  const latestComparisonPoint = currentPerformance?.comparison && currentPerformance.comparison.length > 0
+    ? currentPerformance.comparison[currentPerformance.comparison.length - 1]
+    : null;
+  const latestActualUnits = typeof latestComparisonPoint?.actual === 'number' ? latestComparisonPoint.actual : null;
+  const latestPredictedUnits = typeof latestComparisonPoint?.predicted === 'number' ? latestComparisonPoint.predicted : null;
+  const latestDeltaUnits = (latestActualUnits != null && latestPredictedUnits != null)
+    ? latestActualUnits - latestPredictedUnits
+    : null;
+  const latestComparisonDateLabel = latestComparisonPoint?.date
+    ? normalizeDate(latestComparisonPoint.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    : null;
+  const unitPriceForTooltips = Number(forecasts?.unit_price || selectedTarget?.unit_price || 0);
+  const costPriceForTooltips = Number(forecasts?.cost_price || selectedTarget?.cost_price || 0);
+  const profitPerUnitForTooltips = unitPriceForTooltips - costPriceForTooltips;
   
   const comparisonData = useMemo(() => {
     return (selectedModelMeta?.comparison && typeof selectedModelMeta.comparison === 'object')
@@ -2160,9 +2737,52 @@ const Forecasting = () => {
                 >
                   🧪 Compare Models
                 </button>
+                <button
+                  onClick={() => {
+                    if (bulkTraining) return;
+                    setShowBulkTrainConfirm(true);
+                    setBulkTrainPassword('');
+                    setBulkTrainPasswordError('');
+                  }}
+                  disabled={bulkTraining}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 ${
+                    bulkTraining
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : false
+                        ? 'bg-gray-700 text-white hover:bg-gray-600'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  ⚙️ Retrain Top 50
+                  {bulkTraining && (
+                    <span className="text-[10px] font-semibold">
+                      {bulkTrainingStatus.completed}/{bulkTrainingStatus.total}
+                    </span>
+                  )}
+                </button>
               </div>
             )}
           </div>
+          {bulkTraining && (
+            <div className="mt-2">
+              <div className={`flex items-center justify-between text-xs font-medium ${
+                false ? 'text-blue-300' : 'text-blue-600'
+              }`}>
+                <span>
+                  Retraining {bulkTrainingStatus.currentName || 'products'} ({bulkTrainingStatus.completed}/{bulkTrainingStatus.total})
+                </span>
+                <span>{Math.min(100, Math.max(0, Math.round(bulkTrainingProgress)))}%</span>
+              </div>
+              <div className={`w-full h-2 mt-1 rounded-full overflow-hidden ${
+                false ? 'bg-blue-900/30' : 'bg-blue-100'
+              }`}>
+                <div
+                  className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-300 ease-out"
+                  style={{ width: `${Math.min(100, Math.max(0, bulkTrainingProgress))}%` }}
+                />
+              </div>
+            </div>
+          )}
           
           {/* Professional Product Selector */}
           <div className="bg-gradient-to-br from-gray-50 to-white rounded-xl border border-gray-200 p-5 shadow-sm">
@@ -2317,7 +2937,7 @@ const Forecasting = () => {
               </div>
             </div>
             
-            <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
               <div className={`px-3 py-2 rounded-lg ${false ? 'bg-gray-700' : 'bg-green-50'} border ${false ? 'border-gray-600' : 'border-green-200'}`}>
                 <div className={`text-xs ${false ? 'text-gray-400' : 'text-gray-600'}`}>Unit Price</div>
                 <div className={`text-base font-bold ${false ? 'text-green-300' : 'text-green-700'}`}>
@@ -2372,17 +2992,186 @@ const Forecasting = () => {
                       Accuracy = 100 − (MAE ÷ avg demand × 100)
                     </div>
                   </div>
-                  <div className={`px-3 py-2 rounded-lg ${false ? 'bg-gray-700' : 'bg-indigo-50'} border ${false ? 'border-gray-600' : 'border-indigo-200'}`}>
-                    <div className={`text-xs ${false ? 'text-gray-400' : 'text-gray-600'}`}>Error Metrics</div>
-                    <div className={`text-sm font-semibold ${false ? 'text-indigo-200' : 'text-indigo-700'}`}>
-                      MAE: {typeof maeValue === 'number' ? maeValue.toFixed(4) : 'N/A'}
-                    </div>
-                    <div className={`text-sm font-semibold ${false ? 'text-indigo-200' : 'text-indigo-700'}`}>
-                      RMSE: {typeof rmseValue === 'number' ? rmseValue.toFixed(4) : 'N/A'}
-                    </div>
-                  </div>
+                  {typeof mapeValue === 'number' && (() => {
+                    const bgColor = mapeValue <= 10
+                      ? (false ? 'bg-gray-700' : 'bg-emerald-50')
+                      : mapeValue <= 20
+                        ? (false ? 'bg-gray-700' : 'bg-yellow-50')
+                        : (false ? 'bg-gray-700' : 'bg-red-50');
+                    const borderColor = mapeValue <= 10
+                      ? (false ? 'border-gray-600' : 'border-emerald-200')
+                      : mapeValue <= 20
+                        ? (false ? 'border-gray-600' : 'border-yellow-200')
+                        : (false ? 'border-gray-600' : 'border-red-200');
+                    const textColor = mapeValue <= 10
+                      ? (false ? 'text-emerald-300' : 'text-emerald-700')
+                      : mapeValue <= 20
+                        ? (false ? 'text-yellow-300' : 'text-yellow-700')
+                        : (false ? 'text-red-300' : 'text-red-700');
+                    return (
+                      <div className={`px-3 py-2 rounded-lg border ${bgColor} ${borderColor}`}>
+                        <div className={`text-xs ${false ? 'text-gray-400' : 'text-gray-600'}`}>MAPE</div>
+                        <div className={`text-base font-bold ${textColor}`}>
+                          {mapeValue.toFixed(2)}%
+                        </div>
+                        <div className={`text-[11px] ${false ? 'text-gray-500' : 'text-gray-500'}`}>
+                          Mean Absolute Percentage Error
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Train Confirmation Modal */}
+      {showBulkTrainConfirm && (
+        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center p-4">
+          <div className={`${false ? 'bg-gray-800' : 'bg-white'} rounded-lg max-w-md w-full shadow-xl`}>
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className={`text-xl font-bold ${false ? 'text-white' : 'text-gray-900'}`}>
+                  ⚠️ Confirm Bulk Retraining
+                </h3>
+                <button
+                  onClick={() => {
+                    if (bulkTraining) return;
+                    setShowBulkTrainConfirm(false);
+                    setBulkTrainPassword('');
+                    setBulkTrainPasswordError('');
+                  }}
+                  className={`text-2xl ${false ? 'text-gray-400 hover:text-white' : 'text-gray-400 hover:text-gray-600'}`}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="mb-4">
+                <p className={`text-sm ${false ? 'text-gray-300' : 'text-gray-600'} mb-4`}>
+                  Retraining the top 50 products will update all forecasting models with the latest sales data. This may take a few minutes.
+                </p>
+                <p className={`text-sm font-semibold ${false ? 'text-yellow-400' : 'text-orange-600'} mb-4`}>
+                  ⚠️ Please confirm to proceed with bulk retraining.
+                </p>
+                <div className="mb-4">
+                  <label className={`block text-sm font-medium mb-2 ${false ? 'text-gray-300' : 'text-gray-700'}`}>
+                    Enter password to confirm: <span className="text-xs text-gray-500">(Hint: "TRAIN")</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={bulkTrainPassword}
+                    onChange={(e) => {
+                      setBulkTrainPassword(e.target.value);
+                      setBulkTrainPasswordError('');
+                    }}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter') {
+                        handleBulkTrainConfirm();
+                      }
+                    }}
+                    placeholder="Enter password"
+                    className={`w-full px-4 py-2 border rounded-lg ${
+                      bulkTrainPasswordError
+                        ? 'border-red-500 focus:border-red-500 focus:ring-red-500'
+                        : false
+                          ? 'border-gray-600 bg-gray-700 text-white focus:border-blue-500'
+                          : 'border-gray-300 focus:border-blue-500 focus:ring-blue-500'
+                    } focus:outline-none focus:ring-2`}
+                    autoFocus
+                  />
+                  {bulkTrainPasswordError && (
+                    <p className="mt-2 text-sm text-red-500">{bulkTrainPasswordError}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end space-x-3">
+                <button
+                  onClick={() => {
+                    if (bulkTraining) return;
+                    setShowBulkTrainConfirm(false);
+                    setBulkTrainPassword('');
+                    setBulkTrainPasswordError('');
+                  }}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                    false
+                      ? 'bg-gray-700 text-gray-200 hover:bg-gray-600'
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  } ${bulkTraining ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  disabled={bulkTraining}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleBulkTrainConfirm}
+                  disabled={!bulkTrainPassword.trim() || bulkTraining}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center ${
+                    !bulkTrainPassword.trim() || bulkTraining
+                      ? 'bg-gray-400 text-gray-200 cursor-not-allowed'
+                      : 'bg-orange-600 text-white hover:bg-orange-700'
+                  }`}
+                >
+                  {bulkTraining ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                      Retraining...
+                    </>
+                  ) : (
+                    'Confirm & Retrain Top 50'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedTarget && latestComparisonPoint && (
+        <div className={`${false ? 'bg-gray-800' : 'bg-white'} border-b border-gray-200`}>
+          <div className="px-6 pb-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className={`px-4 py-3 rounded-lg ${false ? 'bg-gray-700 border-gray-600' : 'bg-blue-50 border-blue-200'} border`}>
+                <div className={`text-xs ${false ? 'text-gray-300' : 'text-blue-700'} uppercase tracking-wide`}>
+                  Latest Actual ({latestComparisonDateLabel || 'Recent'})
+                </div>
+                <div className={`text-2xl font-bold ${false ? 'text-white' : 'text-blue-900'}`}>
+                  {latestActualUnits != null ? Number(latestActualUnits).toFixed(0) : '—'} units
+                </div>
+                <div className={`text-xs ${false ? 'text-gray-400' : 'text-blue-600'}`}>
+                  Captured from recent sales window
+                </div>
+              </div>
+              <div className={`px-4 py-3 rounded-lg ${false ? 'bg-gray-700 border-gray-600' : 'bg-purple-50 border-purple-200'} border`}>
+                <div className={`text-xs ${false ? 'text-gray-300' : 'text-purple-700'} uppercase tracking-wide`}>
+                  Predicted ({latestComparisonDateLabel || 'Recent'})
+                </div>
+                <div className={`text-2xl font-bold ${false ? 'text-white' : 'text-purple-900'}`}>
+                  {latestPredictedUnits != null ? Number(latestPredictedUnits).toFixed(0) : '—'} units
+                </div>
+                <div className={`text-xs ${false ? 'text-gray-400' : 'text-purple-600'}`}>
+                  Based on latest retrained model
+                </div>
+              </div>
+              <div className={`px-4 py-3 rounded-lg ${false ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-200'} border`}>
+                <div className={`text-xs ${false ? 'text-gray-300' : 'text-gray-700'} uppercase tracking-wide`}>
+                  Actual vs Predicted
+                </div>
+                <div className={`text-2xl font-bold ${
+                  latestDeltaUnits > 0
+                    ? (false ? 'text-emerald-300' : 'text-emerald-600')
+                    : latestDeltaUnits < 0
+                      ? (false ? 'text-red-300' : 'text-red-600')
+                      : (false ? 'text-white' : 'text-gray-900')
+                }`}>
+                  {latestDeltaUnits != null ? `${latestDeltaUnits > 0 ? '+' : ''}${latestDeltaUnits.toFixed(0)} units` : '—'}
+                </div>
+                <div className={`text-xs ${false ? 'text-gray-400' : 'text-gray-500'}`}>
+                  {latestDeltaUnits > 0 ? 'Actual demand above plan' : latestDeltaUnits < 0 ? 'Actual demand below plan' : 'Perfect alignment'}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -2502,47 +3291,43 @@ const Forecasting = () => {
                               label: (context) => {
                                 const y = context?.parsed?.y;
                                 if (y === null || y === undefined || Number.isNaN(y)) return '';
-                                const label = context.dataset.label || '';
-                                
-                                // Get sales data for this point to show detailed breakdown
-                                const salesData = generateSalesForecastData(selectedTarget, timeframe);
-                                const dataIndex = context.dataIndex;
-                                const saleData = salesData[dataIndex];
-                                
-                                if (label === 'Historical Sales (Units)') {
-                                  if (saleData) {
-                                    const unitPrice = forecasts?.unit_price || Number(selectedTarget.unit_price || 0);
-                                    const costPrice = forecasts?.cost_price || Number(selectedTarget.cost_price || 0);
-                                    const revenue = Number(y) * unitPrice;
-                                    const cost = Number(y) * costPrice;
+                                const datasetLabel = context.dataset.label || '';
+                                if (!datasetLabel) return '';
+                                const raw = context?.label;
+                                const date = raw instanceof Date ? raw : parseLocalISODate(raw);
+                                const normalized = normalizeDate(date);
+                                const key = normalized.getTime();
+                                if (datasetLabel === 'Actual Sales (Units)' || datasetLabel === 'Historical Sales (Units)' || datasetLabel === 'Recent Actual Window') {
+                                  const actualPoint = actualLookup.get(key);
+                                  if (actualPoint) {
+                                    const revenue = actualPoint.revenue ?? actualPoint.sales * unitPriceForTooltips;
+                                    const cost = actualPoint.sales * costPriceForTooltips;
                                     const profit = revenue - cost;
                                     return [
-                                      `Sales: ${Number(y).toFixed(0)} units`,
-                                      `Unit Price: ₱${unitPrice.toFixed(2)}`,
-                                      `Cost Price: ₱${costPrice.toFixed(2)}`,
+                                      `Actual: ${actualPoint.sales} units`,
                                       `Revenue: ₱${revenue.toFixed(2)}`,
-                                      `Cost: ₱${cost.toFixed(2)}`,
                                       `Profit: ₱${profit.toFixed(2)}`
                                     ];
                                   }
-                                  return `Sales: ${Number(y).toFixed(0)} units`;
-                                } else if (label === 'Revenue (₱)') {
-                                  return `Revenue: ₱${Number(y).toFixed(2)}`;
-                                } else if (label === 'Profit (₱)') {
-                                  if (saleData) {
-                                    const unitPrice = forecasts?.unit_price || Number(selectedTarget.unit_price || 0);
-                                    const costPrice = forecasts?.cost_price || Number(selectedTarget.cost_price || 0);
-                                    const sales = saleData.sales || 0;
-                                    return [
-                                      `Profit: ₱${Number(y).toFixed(2)}`,
-                                      `(Sales: ${sales} units × (₱${unitPrice.toFixed(2)} - ₱${costPrice.toFixed(2)}))`
-                                    ];
-                                  }
-                                  return `Profit: ₱${Number(y).toFixed(2)}`;
-                                } else if (label === 'Sales Change (%)') {
-                                  return `Change: ${Number(y).toFixed(1)}%`;
+                                  return `Actual: ${Number(y).toFixed(0)} units`;
                                 }
-                                return `${label}: ${Number(y).toFixed(2)}`;
+                                if (datasetLabel === 'Predicted Sales (Units)' || datasetLabel === 'Forecast (Units)') {
+                                  const predictedValue = predictedLookup.get(key) ?? Number(y);
+                                  const estRevenue = predictedValue * unitPriceForTooltips;
+                                  const estProfit = predictedValue * profitPerUnitForTooltips;
+                                  return [
+                                    `Predicted: ${predictedValue.toFixed(0)} units`,
+                                    `Expected Revenue: ₱${estRevenue.toFixed(2)}`,
+                                    `Expected Profit: ₱${estProfit.toFixed(2)}`
+                                  ];
+                                }
+                                if (datasetLabel === 'Profit (₱)' || datasetLabel === 'Forecast Profit (₱)') {
+                                  return `Profit: ₱${Number(y).toFixed(2)}`;
+                                }
+                                if (datasetLabel === 'Forecast Confidence') {
+                                  return `Confidence floor: ${Number(y).toFixed(0)} units`;
+                                }
+                                return `${datasetLabel}: ${Number(y).toFixed(2)}`;
                               }
                             }
                           }
@@ -2594,12 +3379,11 @@ const Forecasting = () => {
                             suggestedMin: 0,
                             suggestedMax: (() => {
                               try {
-                                const sd = generateSalesForecastData(selectedTarget, timeframe) || [];
-                                const histMaxUnits = sd.reduce((m, d) => Math.max(m, Number(d.sales) || 0), 0);
-                                const foreVals = Array.isArray(forecasts?.values) ? forecasts.values : [];
-                                const foreMaxUnits = foreVals.reduce((m, v) => Math.max(m, Number(v) || 0), 0);
-                                const maxVal = Math.max(histMaxUnits, foreMaxUnits);
-                                return Math.max(10, Math.ceil(maxVal * 1.1));
+                                const actualMaxUnits = currentActualSeries.reduce((m, d) => Math.max(m, Number(d.sales) || 0), 0);
+                                const predictedValues = Array.from(predictedLookup.values());
+                                const predictedMaxUnits = predictedValues.reduce((m, v) => Math.max(m, Number(v) || 0), 0);
+                                const maxVal = Math.max(actualMaxUnits, predictedMaxUnits);
+                                return maxVal > 0 ? Math.max(10, Math.ceil(maxVal * 1.1)) : undefined;
                               } catch (_) {
                                 return undefined;
                               }
@@ -2628,15 +3412,10 @@ const Forecasting = () => {
                             suggestedMin: 0,
                             suggestedMax: (() => {
                               try {
-                                const sd = generateSalesForecastData(selectedTarget, timeframe) || [];
-                                const histMax = sd.reduce((m, d) => Math.max(m, Number(d.profit) || 0), 0);
-                                const unitPrice = forecasts?.unit_price || Number(selectedTarget?.unit_price || 0);
-                                const costPrice = forecasts?.cost_price || Number(selectedTarget?.cost_price || 0);
-                                const ppu = unitPrice - costPrice;
-                                const foreVals = Array.isArray(forecasts?.values) ? forecasts.values : [];
-                                const foreMax = foreVals.reduce((m, v) => Math.max(m, (Number(v) || 0) * ppu), 0);
-                                const maxVal = Math.max(histMax, foreMax);
-                                return Math.max(10, Math.ceil(maxVal * 1.1));
+                                const actualProfitMax = currentActualSeries.reduce((m, d) => Math.max(m, Number(d.profit) || 0), 0);
+                                const predictedProfitMax = Array.from(predictedLookup.values()).reduce((m, v) => Math.max(m, Number(v) * profitPerUnitForTooltips || 0), 0);
+                                const maxVal = Math.max(actualProfitMax, predictedProfitMax);
+                                return maxVal > 0 ? Math.max(10, Math.ceil(maxVal * 1.1)) : undefined;
                               } catch (_) {
                                 return undefined;
                               }
@@ -2936,7 +3715,7 @@ const Forecasting = () => {
                       {(analysisData?.keyMetrics?.salesTrend || 'increasing') === 'decreasing' && (
                         <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
                           <h5 className="font-semibold text-orange-800 mb-2">⚠️ Declining Sales Alert</h5>
-                          <ul className="text-orange-700 text-sm space-y-1">
+                        ``  <ul className="text-orange-700 text-sm space-y-1">
                             <li>• Investigate market conditions</li>
                             <li>• Check product quality</li>
                             <li>• Consider marketing boost</li>
@@ -2977,145 +3756,377 @@ const Forecasting = () => {
       {/* Category Analysis Modal */}
       {showCategoryAnalysis && (
         <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-lg max-w-6xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="sticky top-0 bg-white border-b border-gray-200 p-6">
-              <div className="flex items-center justify-between">
-                <h3 className="text-2xl font-bold text-gray-900">
-                  📊 Category Performance Analysis
-                </h3>
+          <div className={`${false ? 'bg-gray-900' : 'bg-white'} rounded-lg max-w-6xl w-full max-h-[90vh] overflow-y-auto shadow-2xl`}>
+            <div className={`sticky top-0 p-6 border-b ${false ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h3 className={`text-2xl font-bold ${false ? 'text-white' : 'text-gray-900'}`}>
+                    📊 Category Performance Analysis
+                  </h3>
+                  <p className={`text-sm ${false ? 'text-gray-400' : 'text-gray-600'}`}>
+                    Real-time insights powered by aggregated sales, revenue, and profit data
+                  </p>
+                </div>
                 <button
                   onClick={() => setShowCategoryAnalysis(false)}
-                  className="px-4 py-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg"
+                  className={`px-4 py-2 rounded-lg font-medium ${
+                    false ? 'bg-gray-800 text-gray-200 hover:bg-gray-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
                 >
                   ✕ Close
                 </button>
               </div>
+              <div className="flex flex-wrap gap-2 mt-4">
+                {[
+                  { key: 'overview', label: 'Overview' },
+                  { key: 'categories', label: 'Category Table' },
+                  { key: 'products', label: 'Top Products' }
+                ].map(tab => (
+                  <button
+                    key={tab.key}
+                    onClick={() => setCategoryModalTab(tab.key)}
+                    className={`px-4 py-2 rounded-full text-sm font-semibold transition ${
+                      categoryModalTab === tab.key
+                        ? 'bg-blue-600 text-white shadow'
+                        : false
+                          ? 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            
-            <div className="p-6">
-              {/* Most Profitable Categories */}
-              <div className="mb-8">
-                <h4 className="text-xl font-bold text-green-900 mb-4">💰 Most Profitable Categories</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {(() => {
-                    const categoryProfits = categories.map(category => {
-                      const categoryProducts = products.filter(p => p.category_name === category.name);
-                      const totalProfit = categoryProducts.reduce((sum, product) => {
-                        const dailySales = Number(product.avg_daily_sales || 0);
-                        const profitPerUnit = Number(product.unit_price || 0) - Number(product.cost_price || 0);
-                        return sum + (dailySales * profitPerUnit);
-                      }, 0);
-                      return { ...category, totalProfit, productCount: categoryProducts.length };
-                    }).sort((a, b) => b.totalProfit - a.totalProfit);
-                    
-                    return categoryProfits.slice(0, 6).map((category, index) => (
-                      <div key={category.id} className="bg-green-50 rounded-lg p-4 border border-green-200">
-                        <div className="flex items-center justify-between mb-2">
-                          <h5 className="font-semibold text-green-900">{category.name}</h5>
-                          <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
-                            #{index + 1}
-                          </span>
+
+            <div className="p-6 space-y-6">
+              {!categoryPerformance.length ? (
+                <div className={`text-center py-12 rounded-lg border ${false ? 'border-gray-700 text-gray-300' : 'border-gray-200 text-gray-500'}`}>
+                  <p className="text-lg font-semibold mb-2">No category data available</p>
+                  <p>Please load more products or adjust your filters to view category insights.</p>
+                </div>
+              ) : (
+                <>
+                  {categoryModalTab === 'overview' && (
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                        <div className={`p-4 rounded-xl border ${false ? 'bg-gray-800 border-gray-700' : 'bg-blue-50 border-blue-200'}`}>
+                          <p className={`text-xs uppercase tracking-wide ${false ? 'text-gray-400' : 'text-blue-700'}`}>Categories</p>
+                          <p className={`text-2xl font-bold ${false ? 'text-white' : 'text-blue-900'}`}>
+                            {categorySummary.totalCategories}
+                          </p>
+                          <p className={`text-xs ${false ? 'text-gray-500' : 'text-blue-600'}`}>with active products</p>
                         </div>
-                        <div className="text-2xl font-bold text-green-600">
-                          ₱{category.totalProfit.toFixed(2)}
+                        <div className={`p-4 rounded-xl border ${false ? 'bg-gray-800 border-gray-700' : 'bg-purple-50 border-purple-200'}`}>
+                          <p className={`text-xs uppercase tracking-wide ${false ? 'text-gray-400' : 'text-purple-700'}`}>Products</p>
+                          <p className={`text-2xl font-bold ${false ? 'text-white' : 'text-purple-900'}`}>
+                            {categorySummary.totalProducts}
+                          </p>
+                          <p className={`text-xs ${false ? 'text-gray-500' : 'text-purple-600'}`}>total in analysis</p>
                         </div>
-                        <div className="text-sm text-green-700">
-                          Daily profit • {category.productCount} products
+                        <div className={`p-4 rounded-xl border ${false ? 'bg-gray-800 border-gray-700' : 'bg-green-50 border-green-200'}`}>
+                          <p className={`text-xs uppercase tracking-wide ${false ? 'text-gray-400' : 'text-green-700'}`}>Daily Revenue</p>
+                          <p className={`text-2xl font-bold ${false ? 'text-white' : 'text-green-900'}`}>
+                            {formatCurrency(categorySummary.totalRevenue)}
+                          </p>
+                          <p className={`text-xs ${false ? 'text-gray-500' : 'text-green-600'}`}>aggregate across categories</p>
+                        </div>
+                        <div className={`p-4 rounded-xl border ${false ? 'bg-gray-800 border-gray-700' : 'bg-emerald-50 border-emerald-200'}`}>
+                          <p className={`text-xs uppercase tracking-wide ${false ? 'text-gray-400' : 'text-emerald-700'}`}>Daily Profit</p>
+                          <p className={`text-2xl font-bold ${false ? 'text-white' : 'text-emerald-900'}`}>
+                            {formatCurrency(categorySummary.totalProfit)}
+                          </p>
+                          <p className={`text-xs ${false ? 'text-gray-500' : 'text-emerald-600'}`}>net of costs</p>
+                        </div>
+                        <div className={`p-4 rounded-xl border ${false ? 'bg-gray-800 border-gray-700' : 'bg-yellow-50 border-yellow-200'}`}>
+                          <p className={`text-xs uppercase tracking-wide ${false ? 'text-gray-400' : 'text-yellow-700'}`}>Avg Margin</p>
+                          <p className={`text-2xl font-bold ${false ? 'text-white' : 'text-yellow-900'}`}>
+                            {categorySummary.avgMargin.toFixed(1)}%
+                          </p>
+                          <p className={`text-xs ${false ? 'text-gray-500' : 'text-yellow-600'}`}>weighted by revenue</p>
                         </div>
                       </div>
-                    ));
-                  })()}
-                </div>
-              </div>
 
-              {/* Most In-Demand Categories */}
-              <div className="mb-8">
-                <h4 className="text-xl font-bold text-blue-900 mb-4">🔥 Most In-Demand Categories</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {(() => {
-                    const categoryDemand = categories.map(category => {
-                      const categoryProducts = products.filter(p => p.category_name === category.name);
-                      const totalSales = categoryProducts.reduce((sum, product) => {
-                        return sum + Number(product.avg_daily_sales || 0);
-                      }, 0);
-                      return { ...category, totalSales, productCount: categoryProducts.length };
-                    }).sort((a, b) => b.totalSales - a.totalSales);
-                    
-                    return categoryDemand.slice(0, 6).map((category, index) => (
-                      <div key={category.id} className="bg-blue-50 rounded-lg p-4 border border-blue-200">
-                        <div className="flex items-center justify-between mb-2">
-                          <h5 className="font-semibold text-blue-900">{category.name}</h5>
-                          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">
-                            #{index + 1}
-                          </span>
-                        </div>
-                        <div className="text-2xl font-bold text-blue-600">
-                          {Math.round(category.totalSales)} units
-                        </div>
-                        <div className="text-sm text-blue-700">
-                          Daily sales • {category.productCount} products
-                        </div>
-                      </div>
-                    ));
-                  })()}
-                </div>
-              </div>
-
-              {/* Top 3 Products Per Category */}
-              <div>
-                <h4 className="text-xl font-bold text-purple-900 mb-4">🏆 Top 3 Products Per Category</h4>
-                <div className="space-y-6">
-                  {categories.map(category => {
-                    const categoryProducts = products
-                      .filter(p => p.category_name === category.name)
-                      .map(product => ({
-                        ...product,
-                        dailyProfit: Number(product.avg_daily_sales || 0) * (Number(product.unit_price || 0) - Number(product.cost_price || 0))
-                      }))
-                      .sort((a, b) => b.dailyProfit - a.dailyProfit)
-                      .slice(0, 3);
-                    
-                    if (categoryProducts.length === 0) return null;
-                    
-                    return (
-                      <div key={category.id} className="bg-gray-50 rounded-lg p-4">
-                        <h5 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                          📦 {category.name}
-                          <span className="text-sm text-gray-500">({categoryProducts.length} products)</span>
-                        </h5>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                          {categoryProducts.map((product, index) => (
-                            <div key={product.id} className="bg-white rounded-lg p-3 border border-gray-200">
-                              <div className="flex items-center justify-between mb-2">
-                                <h6 className="font-medium text-gray-900 text-sm truncate">{product.name}</h6>
-                                <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded-full">
-                                  #{index + 1}
-                                </span>
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className={`p-5 rounded-xl border ${false ? 'bg-green-950/40 border-green-900' : 'bg-green-50 border-green-200'}`}>
+                          <h4 className={`text-lg font-semibold mb-4 flex items-center gap-2 ${false ? 'text-green-100' : 'text-green-900'}`}>
+                            💰 Most Profitable Categories
+                          </h4>
+                          <div className="space-y-3">
+                            {topProfitCategories.map((category, index) => (
+                              <div
+                                key={category.name}
+                                className={`flex items-center justify-between p-3 rounded-lg border ${
+                                  false ? 'border-green-900 bg-green-900/30' : 'border-green-100 bg-white'
+                                }`}
+                              >
+                                <div>
+                                  <p className={`text-sm font-semibold ${false ? 'text-green-50' : 'text-gray-900'}`}>
+                                    #{index + 1} {category.name}
+                                  </p>
+                                  <p className={`text-xs ${false ? 'text-green-200' : 'text-gray-500'}`}>
+                                    {category.productCount} products • {formatNumber(category.totalSales, 0)} units/day
+                                  </p>
+                                </div>
+                                <div className={`text-right ${false ? 'text-green-200' : 'text-green-700'}`}>
+                                  <p className="text-sm font-bold">{formatCurrency(category.totalProfit)}</p>
+                                  <p className="text-xs">daily profit</p>
+                                </div>
                               </div>
-                              <div className="space-y-1">
-                                <div className="flex justify-between text-xs">
-                                  <span className="text-gray-600">Daily Sales:</span>
-                                  <span className="font-medium">{Math.round(Number(product.avg_daily_sales || 0))} units</span>
+                            ))}
+                          </div>
+                        </div>
+                        <div className={`p-5 rounded-xl border ${false ? 'bg-blue-950/40 border-blue-900' : 'bg-blue-50 border-blue-200'}`}>
+                          <h4 className={`text-lg font-semibold mb-4 flex items-center gap-2 ${false ? 'text-blue-100' : 'text-blue-900'}`}>
+                            🔥 Most In-Demand Categories
+                          </h4>
+                          <div className="space-y-3">
+                            {topDemandCategories.map((category, index) => (
+                              <div
+                                key={category.name}
+                                className={`flex items-center justify-between p-3 rounded-lg border ${
+                                  false ? 'border-blue-900 bg-blue-900/30' : 'border-blue-100 bg-white'
+                                }`}
+                              >
+                                <div>
+                                  <p className={`text-sm font-semibold ${false ? 'text-blue-50' : 'text-gray-900'}`}>
+                                    #{index + 1} {category.name}
+                                  </p>
+                                  <p className={`text-xs ${false ? 'text-blue-200' : 'text-gray-500'}`}>
+                                    {category.productCount} products • {formatCurrency(category.totalRevenue)} revenue
+                                  </p>
                                 </div>
-                                <div className="flex justify-between text-xs">
-                                  <span className="text-gray-600">Daily Profit:</span>
-                                  <span className="font-medium text-green-600">₱{product.dailyProfit.toFixed(2)}</span>
+                                <div className={`text-right ${false ? 'text-blue-200' : 'text-blue-700'}`}>
+                                  <p className="text-sm font-bold">{formatNumber(category.totalSales, 0)} units</p>
+                                  <p className="text-xs">per day</p>
                                 </div>
-                                <div className="flex justify-between text-xs">
-                                  <span className="text-gray-600">Profit Margin:</span>
-                                  <span className="font-medium">
-                                    {Math.round(((Number(product.unit_price || 0) - Number(product.cost_price || 0)) / Number(product.unit_price || 1)) * 100)}%
-                                  </span>
-                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {categoryModalTab === 'categories' && (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        <div className="md:col-span-2">
+                          <label className={`text-sm font-semibold mb-2 block ${false ? 'text-gray-300' : 'text-gray-700'}`}>
+                            Search categories
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="Search by category name..."
+                            value={categorySearchTerm}
+                            onChange={(e) => setCategorySearchTerm(e.target.value)}
+                            className={`w-full px-4 py-2 rounded-lg border ${
+                              false
+                                ? 'bg-gray-800 border-gray-700 text-white placeholder-gray-500'
+                                : 'bg-white border-gray-300 text-gray-900 placeholder-gray-500 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20'
+                            }`}
+                          />
+                        </div>
+                        <div>
+                          <label className={`text-sm font-semibold mb-2 block ${false ? 'text-gray-300' : 'text-gray-700'}`}>
+                            Filter by status
+                          </label>
+                          <select
+                            value={categoryFilterMode}
+                            onChange={(e) => setCategoryFilterMode(e.target.value)}
+                            className={`w-full px-3 py-2 rounded-lg border ${
+                              false
+                                ? 'bg-gray-800 border-gray-700 text-white'
+                                : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20'
+                            }`}
+                          >
+                            <option value="all">All categories</option>
+                            <option value="highDemand">High demand</option>
+                            <option value="lowDemand">Low demand</option>
+                            <option value="highProfit">High profit margin</option>
+                            <option value="lowProfit">Low profit margin</option>
+                            <option value="atRisk">At risk (low demand or margin)</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {filteredCategoryPerformance.length === 0 ? (
+                        <div className={`text-center py-12 rounded-lg border ${false ? 'border-gray-700 text-gray-300' : 'border-gray-200 text-gray-500'}`}>
+                          <p className="text-sm font-medium">No categories match the current filters.</p>
+                          <p className="text-xs mt-1">Try clearing your search or selecting a different filter.</p>
+                        </div>
+                      ) : (
+                        <div className="overflow-x-auto rounded-xl border border-gray-200">
+                          <table className="min-w-full divide-y divide-gray-200">
+                            <thead className={`${false ? 'bg-gray-800 text-gray-300' : 'bg-gray-50 text-gray-500'}`}>
+                              <tr>
+                                {['Category', 'Products', 'Daily Sales', 'Daily Revenue', 'Daily Profit', 'Demand', 'Margin'].map(head => (
+                                  <th key={head} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide">
+                                    {head}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody className={false ? 'bg-gray-900 text-gray-100' : 'bg-white text-gray-900'}>
+                              {filteredCategoryPerformance.map(category => (
+                                <tr key={category.name} className={`${false ? 'border-gray-800' : 'border-gray-100'} border-b`}>
+                                  <td className="px-4 py-3">
+                                    <p className="font-semibold">{category.name}</p>
+                                    <p className="text-xs text-gray-500">Demand: {category.demandLevel}</p>
+                                  </td>
+                                  <td className="px-4 py-3 text-sm font-medium">{category.productCount}</td>
+                                  <td className="px-4 py-3 text-sm font-medium">{formatNumber(category.totalSales, 0)} units</td>
+                                  <td className="px-4 py-3 text-sm font-semibold text-green-600">{formatCurrency(category.totalRevenue)}</td>
+                                  <td className="px-4 py-3 text-sm font-semibold text-emerald-600">{formatCurrency(category.totalProfit)}</td>
+                                  <td className="px-4 py-3">
+                                    <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                                      category.demandLevel === 'High'
+                                        ? 'bg-green-100 text-green-700'
+                                        : category.demandLevel === 'Medium'
+                                          ? 'bg-yellow-100 text-yellow-700'
+                                          : 'bg-red-100 text-red-700'
+                                    }`}>
+                                      {category.demandLevel}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                                      category.profitHealth === 'High'
+                                        ? 'bg-emerald-100 text-emerald-700'
+                                        : category.profitHealth === 'Medium'
+                                          ? 'bg-yellow-100 text-yellow-700'
+                                          : 'bg-red-100 text-red-700'
+                                    }`}>
+                                      {category.profitMargin.toFixed(1)}%
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {categoryModalTab === 'products' && (
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <div>
+                          <label className={`text-sm font-semibold mb-2 block ${false ? 'text-gray-300' : 'text-gray-700'}`}>
+                            Choose a category
+                          </label>
+                          <select
+                            value={categoryDetailSelection || ''}
+                            onChange={(e) => setCategoryDetailSelection(e.target.value)}
+                            className={`w-full px-4 py-2 rounded-lg border ${
+                              false
+                                ? 'bg-gray-800 border-gray-700 text-white'
+                                : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20'
+                            }`}
+                          >
+                            {(filteredCategoryPerformance.length ? filteredCategoryPerformance : categoryPerformance).map(category => (
+                              <option key={category.name} value={category.name}>
+                                {category.name} ({category.productCount} products)
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        {selectedCategoryDetail && (
+                          <div className={`rounded-xl border p-4 ${
+                            false ? 'bg-gray-800 border-gray-700' : 'bg-gray-50 border-gray-200'
+                          }`}>
+                            <p className={`text-xs uppercase tracking-wide mb-1 ${false ? 'text-gray-400' : 'text-gray-600'}`}>
+                              Key Metrics
+                            </p>
+                            <div className="grid grid-cols-3 gap-3">
+                              <div>
+                                <p className={`text-xs ${false ? 'text-gray-400' : 'text-gray-500'}`}>Demand</p>
+                                <p className={`text-lg font-bold ${
+                                  selectedCategoryDetail.demandLevel === 'High'
+                                    ? 'text-green-600'
+                                    : selectedCategoryDetail.demandLevel === 'Medium'
+                                      ? 'text-yellow-600'
+                                      : 'text-red-600'
+                                }`}>
+                                  {selectedCategoryDetail.demandLevel}
+                                </p>
+                              </div>
+                              <div>
+                                <p className={`text-xs ${false ? 'text-gray-400' : 'text-gray-500'}`}>Avg Sales</p>
+                                <p className={`text-lg font-bold ${false ? 'text-white' : 'text-gray-900'}`}>
+                                  {formatNumber(selectedCategoryDetail.avgSales, 1)} units
+                                </p>
+                              </div>
+                              <div>
+                                <p className={`text-xs ${false ? 'text-gray-400' : 'text-gray-500'}`}>Margin</p>
+                                <p className={`text-lg font-bold ${
+                                  selectedCategoryDetail.profitHealth === 'High'
+                                    ? 'text-emerald-600'
+                                    : selectedCategoryDetail.profitHealth === 'Medium'
+                                      ? 'text-yellow-600'
+                                      : 'text-red-600'
+                                }`}>
+                                  {selectedCategoryDetail.profitMargin.toFixed(1)}%
+                                </p>
                               </div>
                             </div>
-                          ))}
-                        </div>
+                          </div>
+                        )}
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
+
+                      {selectedCategoryDetail ? (
+                        <div>
+                          <h4 className={`text-lg font-semibold mb-3 ${false ? 'text-white' : 'text-gray-900'}`}>
+                            Top Products in {selectedCategoryDetail.name}
+                          </h4>
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {selectedCategoryDetail.topProducts.map((product, index) => (
+                              <div
+                                key={`${product.id}-${product.name}`}
+                                className={`p-4 rounded-xl border ${
+                                  false ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between mb-3">
+                                  <p className={`text-sm font-semibold ${false ? 'text-white' : 'text-gray-900'}`}>
+                                    {product.name}
+                                  </p>
+                                  <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full font-semibold">
+                                    #{index + 1}
+                                  </span>
+                                </div>
+                                <div className="space-y-2 text-sm">
+                                  <div className="flex justify-between">
+                                    <span className={`${false ? 'text-gray-400' : 'text-gray-500'}`}>Daily Sales</span>
+                                    <span className="font-semibold">{formatNumber(product.dailySales, 0)} units</span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span className={`${false ? 'text-gray-400' : 'text-gray-500'}`}>Revenue</span>
+                                    <span className="font-semibold text-green-600">{formatCurrency(product.revenue)}</span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span className={`${false ? 'text-gray-400' : 'text-gray-500'}`}>Profit</span>
+                                    <span className="font-semibold text-emerald-600">{formatCurrency(product.profit)}</span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span className={`${false ? 'text-gray-400' : 'text-gray-500'}`}>Margin</span>
+                                    <span className="font-semibold">{product.profitMargin.toFixed(1)}%</span>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className={`text-center py-10 rounded-lg border ${false ? 'border-gray-700 text-gray-300' : 'border-gray-200 text-gray-500'}`}>
+                          <p className="text-sm font-medium">Select a category to view detailed product performance.</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -3428,6 +4439,10 @@ const Forecasting = () => {
                 options={{
                   responsive: true,
                   maintainAspectRatio: false,
+                  interaction: {
+                    intersect: false,
+                    mode: 'index'
+                  },
                   plugins: {
                     legend: {
                       display: true,
@@ -3436,7 +4451,7 @@ const Forecasting = () => {
                         color: '#374151',
                         usePointStyle: true,
                         padding: 20,
-                        filter: (item) => item.text !== '' // Hide empty labels (like CI Upper)
+                        filter: (item) => item.text !== ''
                       }
                     },
                     zoom: {
@@ -3459,6 +4474,65 @@ const Forecasting = () => {
                         enabled: false,
                         mode: 'x',
                       }
+                    },
+                    tooltip: {
+                      backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                      titleColor: '#111827',
+                      bodyColor: '#1f2937',
+                      borderColor: '#e5e7eb',
+                      borderWidth: 1,
+                      callbacks: {
+                        title: (context) => {
+                          const raw = context?.[0]?.label;
+                          const date = raw instanceof Date ? raw : parseLocalISODate(raw);
+                          if (isNaN(date.getTime())) return '';
+                          const opts = (timeframe === 'MAX' || timeframe === '1Y')
+                            ? { year: 'numeric', month: 'short', day: 'numeric' }
+                            : { month: 'short', day: 'numeric' };
+                          return date.toLocaleDateString('en-US', opts);
+                        },
+                        label: (context) => {
+                          const y = context?.parsed?.y;
+                          if (y === null || y === undefined || Number.isNaN(y)) return '';
+                          const datasetLabel = context.dataset.label || '';
+                          if (!datasetLabel) return '';
+                          const raw = context?.label;
+                          const date = raw instanceof Date ? raw : parseLocalISODate(raw);
+                          const normalized = normalizeDate(date);
+                          const key = normalized.getTime();
+                          if (datasetLabel === 'Actual Sales (Units)' || datasetLabel === 'Historical Sales (Units)' || datasetLabel === 'Recent Actual Window') {
+                            const actualPoint = actualLookup.get(key);
+                            if (actualPoint) {
+                              const revenue = actualPoint.revenue ?? actualPoint.sales * unitPriceForTooltips;
+                              const cost = actualPoint.sales * costPriceForTooltips;
+                              const profit = revenue - cost;
+                              return [
+                                `Actual: ${actualPoint.sales} units`,
+                                `Revenue: ₱${revenue.toFixed(2)}`,
+                                `Profit: ₱${profit.toFixed(2)}`
+                              ];
+                            }
+                            return `Actual: ${Number(y).toFixed(0)} units`;
+                          }
+                          if (datasetLabel === 'Predicted Sales (Units)' || datasetLabel === 'Forecast (Units)') {
+                            const predictedValue = predictedLookup.get(key) ?? Number(y);
+                            const estRevenue = predictedValue * unitPriceForTooltips;
+                            const estProfit = predictedValue * profitPerUnitForTooltips;
+                            return [
+                              `Predicted: ${predictedValue.toFixed(0)} units`,
+                              `Expected Revenue: ₱${estRevenue.toFixed(2)}`,
+                              `Expected Profit: ₱${estProfit.toFixed(2)}`
+                            ];
+                          }
+                          if (datasetLabel === 'Profit (₱)' || datasetLabel === 'Forecast Profit (₱)') {
+                            return `Profit: ₱${Number(y).toFixed(2)}`;
+                          }
+                          if (datasetLabel === 'Forecast Confidence') {
+                            return `Confidence floor: ${Number(y).toFixed(0)} units`;
+                          }
+                          return `${datasetLabel}: ${Number(y).toFixed(2)}`;
+                        }
+                      }
                     }
                   },
                   scales: {
@@ -3471,15 +4545,12 @@ const Forecasting = () => {
                         color: '#6b7280',
                         maxTicksLimit: 8,
                         callback: function(value, index) {
-                          const salesData = generateSalesForecastData(selectedTarget, timeframe);
-                          const date = new Date(salesData[index]?.date || new Date());
-                          if (timeframe === '1H') {
+                          const lbl = this?.chart?.data?.labels ? this.chart.data.labels[index] : null;
+                          const date = lbl instanceof Date ? lbl : parseLocalISODate(lbl || Date.now());
+                          if (timeframe === '1H' || timeframe === '4H') {
                             return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-                          } else if (timeframe === '4H') {
-                            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-                          } else {
-                            return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
                           }
+                          return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
                         }
                       }
                     },
@@ -3499,12 +4570,11 @@ const Forecasting = () => {
                       suggestedMin: 0,
                       suggestedMax: (() => {
                         try {
-                          const sd = generateSalesForecastData(selectedTarget, timeframe) || [];
-                          const histMaxUnits = sd.reduce((m, d) => Math.max(m, Number(d.sales) || 0), 0);
-                          const foreVals = Array.isArray(forecasts?.values) ? forecasts.values : [];
-                          const foreMaxUnits = foreVals.reduce((m, v) => Math.max(m, Number(v) || 0), 0);
-                          const maxVal = Math.max(histMaxUnits, foreMaxUnits);
-                          return Math.max(10, Math.ceil(maxVal * 1.1));
+                          const actualMaxUnits = currentActualSeries.reduce((m, d) => Math.max(m, Number(d.sales) || 0), 0);
+                          const predictedValues = Array.from(predictedLookup.values());
+                          const predictedMaxUnits = predictedValues.reduce((m, v) => Math.max(m, Number(v) || 0), 0);
+                          const maxVal = Math.max(actualMaxUnits, predictedMaxUnits);
+                          return maxVal > 0 ? Math.max(10, Math.ceil(maxVal * 1.1)) : undefined;
                         } catch (_) {
                           return undefined;
                         }
@@ -3533,15 +4603,10 @@ const Forecasting = () => {
                       suggestedMin: 0,
                       suggestedMax: (() => {
                         try {
-                          const sd = generateSalesForecastData(selectedTarget, timeframe) || [];
-                          const histMax = sd.reduce((m, d) => Math.max(m, Number(d.profit) || 0), 0);
-                          const unitPrice = forecasts?.unit_price || Number(selectedTarget?.unit_price || 0);
-                          const costPrice = forecasts?.cost_price || Number(selectedTarget?.cost_price || 0);
-                          const ppu = unitPrice - costPrice;
-                          const foreVals = Array.isArray(forecasts?.values) ? forecasts.values : [];
-                          const foreMax = foreVals.reduce((m, v) => Math.max(m, (Number(v) || 0) * ppu), 0);
-                          const maxVal = Math.max(histMax, foreMax);
-                          return Math.max(10, Math.ceil(maxVal * 1.1));
+                          const actualProfitMax = currentActualSeries.reduce((m, d) => Math.max(m, Number(d.profit) || 0), 0);
+                          const predictedProfitMax = Array.from(predictedLookup.values()).reduce((m, v) => Math.max(m, Number(v) * profitPerUnitForTooltips || 0), 0);
+                          const maxVal = Math.max(actualProfitMax, predictedProfitMax);
+                          return maxVal > 0 ? Math.max(10, Math.ceil(maxVal * 1.1)) : undefined;
                         } catch (_) {
                           return undefined;
                         }
