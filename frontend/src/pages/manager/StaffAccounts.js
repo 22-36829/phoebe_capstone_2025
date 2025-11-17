@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Users, Plus, Search, Mail, Shield, Trash2, Loader2, X, Edit3, RotateCcw, UserCheck, UserX } from 'lucide-react';
+import { Users, Plus, Search, Mail, Shield, Trash2, Loader2, X, Edit3, RotateCcw, UserCheck, UserX, Eye, EyeOff } from 'lucide-react';
 import { ManagerAPI } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -11,13 +11,24 @@ const StaffAccounts = () => {
   const [query, setQuery] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ first_name: '', last_name: '', email: '', password: '' });
+  const [form, setForm] = useState({ first_name: '', last_name: '', email: '', password: '', confirmPassword: '' });
+  const [passwordError, setPasswordError] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [touched, setTouched] = useState({});
   const [editOpen, setEditOpen] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [editing, setEditing] = useState(null);
   const [editForm, setEditForm] = useState({ first_name: '', last_name: '', email: '', phone: '', address: '' });
   const [resettingId, setResettingId] = useState(null);
   const [statusFilter, setStatusFilter] = useState('all'); // all, active, inactive
+  
+  // Validation constants
+  const MIN_PASSWORD_LENGTH = 8;
+  const MAX_PASSWORD_LENGTH = 128;
+  const MAX_NAME_LENGTH = 100;
+  const MAX_EMAIL_LENGTH = 255;
 
   const filtered = useMemo(() => {
     let result = staff;
@@ -60,15 +71,150 @@ const StaffAccounts = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  // Validation functions
+  const validateField = (name, value) => {
+    let error = '';
+    
+    switch (name) {
+      case 'first_name':
+      case 'last_name':
+        if (!value || !value.trim()) {
+          error = `${name === 'first_name' ? 'First name' : 'Last name'} is required`;
+        } else if (value.length > MAX_NAME_LENGTH) {
+          error = `Must be no more than ${MAX_NAME_LENGTH} characters`;
+        } else if (!/^[a-zA-Z\s\-']+$/.test(value)) {
+          error = 'Can only contain letters, spaces, hyphens, and apostrophes';
+        }
+        break;
+      
+      case 'email':
+        if (!value || !value.trim()) {
+          error = 'Email is required';
+        } else if (value.length > MAX_EMAIL_LENGTH) {
+          error = `Email must be no more than ${MAX_EMAIL_LENGTH} characters`;
+        } else if (value.length < 3) {
+          error = 'Email must be at least 3 characters';
+        } else if (!/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(value)) {
+          error = 'Invalid email format';
+        }
+        break;
+      
+      case 'password':
+        if (!value) {
+          error = 'Password is required';
+        } else if (value.length < MIN_PASSWORD_LENGTH) {
+          error = `Password must be at least ${MIN_PASSWORD_LENGTH} characters`;
+        } else if (value.length > MAX_PASSWORD_LENGTH) {
+          error = `Password must be no more than ${MAX_PASSWORD_LENGTH} characters`;
+        } else if (!/[a-zA-Z]/.test(value)) {
+          error = 'Password must contain at least one letter';
+        } else if (!/[0-9]/.test(value)) {
+          error = 'Password must contain at least one number';
+        }
+        break;
+      
+      case 'confirmPassword':
+        if (!value) {
+          error = 'Please confirm your password';
+        } else if (value !== form.password) {
+          error = 'Passwords do not match';
+        }
+        break;
+      
+      default:
+        break;
+    }
+    
+    return error;
+  };
+
+  const handleFieldChange = (field, value) => {
+    // Enforce max length
+    let processedValue = value;
+    if (field === 'first_name' || field === 'last_name') {
+      if (value.length > MAX_NAME_LENGTH) {
+        processedValue = value.slice(0, MAX_NAME_LENGTH);
+      }
+      // Filter invalid characters for names
+      processedValue = processedValue.replace(/[^a-zA-Z\s\-']/g, '');
+    } else if (field === 'email') {
+      if (value.length > MAX_EMAIL_LENGTH) {
+        processedValue = value.slice(0, MAX_EMAIL_LENGTH);
+      }
+    } else if (field === 'password' || field === 'confirmPassword') {
+      if (value.length > MAX_PASSWORD_LENGTH) {
+        processedValue = value.slice(0, MAX_PASSWORD_LENGTH);
+      }
+    }
+    
+    setForm(f => ({ ...f, [field]: processedValue }));
+    
+    // Clear password error when typing
+    if (field === 'password' || field === 'confirmPassword') {
+      if (passwordError) setPasswordError('');
+    }
+    
+    // Validate if field has been touched
+    if (touched[field]) {
+      const error = validateField(field, processedValue);
+      setFieldErrors(f => ({ ...f, [field]: error }));
+    }
+  };
+
+  const handleFieldBlur = (field) => {
+    setTouched(f => ({ ...f, [field]: true }));
+    const error = validateField(field, form[field]);
+    setFieldErrors(f => ({ ...f, [field]: error }));
+  };
+
   const handleCreate = async (e) => {
     e.preventDefault();
-    if (!form.email || !form.password || !form.first_name || !form.last_name) return;
+    
+    // Mark all fields as touched
+    const allTouched = {
+      first_name: true,
+      last_name: true,
+      email: true,
+      password: true,
+      confirmPassword: true
+    };
+    setTouched(allTouched);
+    
+    // Validate all fields
+    const errors = {};
+    ['first_name', 'last_name', 'email', 'password', 'confirmPassword'].forEach(field => {
+      const error = validateField(field, form[field]);
+      if (error) errors[field] = error;
+    });
+    
+    setFieldErrors(errors);
+    
+    // Check if there are any errors
+    if (Object.keys(errors).length > 0) {
+      setPasswordError(errors.password || errors.confirmPassword || '');
+      return;
+    }
+    
+    // Validate password match
+    if (form.password !== form.confirmPassword) {
+      setPasswordError('Passwords do not match');
+      setFieldErrors(f => ({ ...f, confirmPassword: 'Passwords do not match' }));
+      return;
+    }
+    
     try {
       setCreating(true);
       setError('');
-      await ManagerAPI.createStaff(form, token);
+      setPasswordError('');
+      // Only send password, not confirmPassword to the API
+      const { confirmPassword, ...staffData } = form;
+      await ManagerAPI.createStaff(staffData, token);
       setShowAdd(false);
-      setForm({ first_name: '', last_name: '', email: '', password: '' });
+      setForm({ first_name: '', last_name: '', email: '', password: '', confirmPassword: '' });
+      setFieldErrors({});
+      setTouched({});
+      setShowPassword(false);
+      setShowConfirmPassword(false);
       await load();
     } catch (e) {
       setError(e.message || 'Failed to create staff');
@@ -160,6 +306,7 @@ const StaffAccounts = () => {
   };
 
   return (
+    <>
     <div className="space-y-6">
       {/* Header */}
       <div className="bg-gradient-to-r from-indigo-600 to-violet-600 rounded-xl p-6 text-white">
@@ -327,35 +474,172 @@ const StaffAccounts = () => {
         </div>
       </div>
 
+    </div>
+
       {/* Add Staff Modal */}
       {showAdd && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 px-4 py-0">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-xl font-bold text-gray-900">Add Staff Member</h3>
-              <button onClick={() => setShowAdd(false)} className="p-2 rounded-lg hover:bg-gray-100"><X className="w-5 h-5 text-gray-500" /></button>
+              <button onClick={() => {
+                setShowAdd(false);
+                setForm({ first_name: '', last_name: '', email: '', password: '', confirmPassword: '' });
+                setPasswordError('');
+                setFieldErrors({});
+                setTouched({});
+                setShowPassword(false);
+                setShowConfirmPassword(false);
+              }} className="p-2 rounded-lg hover:bg-gray-100"><X className="w-5 h-5 text-gray-500" /></button>
             </div>
             <form onSubmit={handleCreate} className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">First Name</label>
-                  <input value={form.first_name} onChange={e => setForm(f => ({ ...f, first_name: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent" required />
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    First Name <span className="text-red-500">*</span>
+                  </label>
+                  <input 
+                    value={form.first_name} 
+                    onChange={e => handleFieldChange('first_name', e.target.value)}
+                    onBlur={() => handleFieldBlur('first_name')}
+                    maxLength={MAX_NAME_LENGTH}
+                    className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent ${
+                      fieldErrors.first_name && touched.first_name ? 'border-red-300' : 'border-gray-300'
+                    }`} 
+                    required 
+                  />
+                  {fieldErrors.first_name && touched.first_name && (
+                    <p className="mt-1 text-sm text-red-600">{fieldErrors.first_name}</p>
+                  )}
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Last Name</label>
-                  <input value={form.last_name} onChange={e => setForm(f => ({ ...f, last_name: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent" required />
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Last Name <span className="text-red-500">*</span>
+                  </label>
+                  <input 
+                    value={form.last_name} 
+                    onChange={e => handleFieldChange('last_name', e.target.value)}
+                    onBlur={() => handleFieldBlur('last_name')}
+                    maxLength={MAX_NAME_LENGTH}
+                    className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent ${
+                      fieldErrors.last_name && touched.last_name ? 'border-red-300' : 'border-gray-300'
+                    }`} 
+                    required 
+                  />
+                  {fieldErrors.last_name && touched.last_name && (
+                    <p className="mt-1 text-sm text-red-600">{fieldErrors.last_name}</p>
+                  )}
                 </div>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent" required />
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Email <span className="text-red-500">*</span>
+                </label>
+                <input 
+                  type="email" 
+                  value={form.email} 
+                  onChange={e => handleFieldChange('email', e.target.value)}
+                  onBlur={() => handleFieldBlur('email')}
+                  maxLength={MAX_EMAIL_LENGTH}
+                  className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent ${
+                    fieldErrors.email && touched.email ? 'border-red-300' : 'border-gray-300'
+                  }`} 
+                  required 
+                />
+                {fieldErrors.email && touched.email && (
+                  <p className="mt-1 text-sm text-red-600">{fieldErrors.email}</p>
+                )}
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Temporary Password</label>
-                <input type="password" value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent" required />
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Temporary Password <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <input 
+                    type={showPassword ? 'text' : 'password'} 
+                    value={form.password} 
+                    onChange={e => handleFieldChange('password', e.target.value)}
+                    onBlur={() => handleFieldBlur('password')}
+                    maxLength={MAX_PASSWORD_LENGTH}
+                    minLength={MIN_PASSWORD_LENGTH}
+                    className={`w-full px-3 py-2 pr-10 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent ${
+                      fieldErrors.password && touched.password ? 'border-red-300' : 'border-gray-300'
+                    }`} 
+                    required 
+                  />
+                  <button
+                    type="button"
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                    onClick={() => setShowPassword(!showPassword)}
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-5 w-5 text-gray-400 hover:text-gray-600" />
+                    ) : (
+                      <Eye className="h-5 w-5 text-gray-400 hover:text-gray-600" />
+                    )}
+                  </button>
+                </div>
+                {fieldErrors.password && touched.password && (
+                  <p className="mt-1 text-sm text-red-600">{fieldErrors.password}</p>
+                )}
+                {!fieldErrors.password && form.password && (
+                  <p className="mt-1 text-xs text-gray-500">
+                    Must be {MIN_PASSWORD_LENGTH}-{MAX_PASSWORD_LENGTH} characters with at least one letter and one number
+                  </p>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Confirm Password <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <input 
+                    type={showConfirmPassword ? 'text' : 'password'} 
+                    value={form.confirmPassword} 
+                    onChange={e => handleFieldChange('confirmPassword', e.target.value)}
+                    onBlur={() => handleFieldBlur('confirmPassword')}
+                    maxLength={MAX_PASSWORD_LENGTH}
+                    minLength={MIN_PASSWORD_LENGTH}
+                    className={`w-full px-3 py-2 pr-10 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent ${
+                      (fieldErrors.confirmPassword && touched.confirmPassword) || passwordError ? 'border-red-300' : 'border-gray-300'
+                    }`} 
+                    required 
+                  />
+                  <button
+                    type="button"
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                  >
+                    {showConfirmPassword ? (
+                      <EyeOff className="h-5 w-5 text-gray-400 hover:text-gray-600" />
+                    ) : (
+                      <Eye className="h-5 w-5 text-gray-400 hover:text-gray-600" />
+                    )}
+                  </button>
+                </div>
+                {(fieldErrors.confirmPassword && touched.confirmPassword) && (
+                  <p className="mt-1 text-sm text-red-600">{fieldErrors.confirmPassword}</p>
+                )}
+                {passwordError && !fieldErrors.confirmPassword && (
+                  <p className="mt-1 text-sm text-red-600">{passwordError}</p>
+                )}
               </div>
               <div className="flex items-center gap-2 justify-end pt-2">
-                <button type="button" onClick={() => setShowAdd(false)} className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">Cancel</button>
+                <button 
+                  type="button" 
+                  onClick={() => {
+                    setShowAdd(false);
+                    setForm({ first_name: '', last_name: '', email: '', password: '', confirmPassword: '' });
+                    setPasswordError('');
+                    setFieldErrors({});
+                    setTouched({});
+                    setShowPassword(false);
+                    setShowConfirmPassword(false);
+                  }} 
+                  className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
                 <button disabled={creating} type="submit" className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-2">
                   {creating && <Loader2 className="w-4 h-4 animate-spin" />}
                   Create
@@ -368,7 +652,7 @@ const StaffAccounts = () => {
 
       {/* Edit Staff Modal */}
       {editOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 px-4 py-0">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-xl font-bold text-gray-900">Edit Staff</h3>
@@ -410,7 +694,7 @@ const StaffAccounts = () => {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 };
 

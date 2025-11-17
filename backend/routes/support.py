@@ -2,7 +2,7 @@
 
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
@@ -24,7 +24,6 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 support_bp = Blueprint("support", __name__, url_prefix="/api/support")
 announcements_bp = Blueprint("announcements", __name__, url_prefix="/api/announcements")
-
 
 def _generate_ticket_number(conn, pharmacy_id: int) -> str:
     """Generate a unique ticket number for the given pharmacy."""
@@ -273,8 +272,22 @@ def add_ticket_message(ticket_id: int):
     data = request.get_json() or {}
     message_text = (data.get("message") or "").strip()
 
+    # Message validation
+    MAX_MESSAGE_LENGTH = 500
+    MIN_MESSAGE_LENGTH = 1
+    MESSAGE_COOLDOWN_SECONDS = 3  # 3 seconds between messages
+
     if not message_text:
         return jsonify({"success": False, "error": "Message is required"}), 400
+
+    if len(message_text) < MIN_MESSAGE_LENGTH:
+        return jsonify({"success": False, "error": "Message cannot be empty"}), 400
+
+    if len(message_text) > MAX_MESSAGE_LENGTH:
+        return jsonify({
+            "success": False,
+            "error": f"Message exceeds the maximum length of {MAX_MESSAGE_LENGTH} characters. Current: {len(message_text)}"
+        }), 400
 
     with engine.connect() as conn:
         me = conn.execute(
@@ -283,6 +296,39 @@ def add_ticket_message(ticket_id: int):
         ).mappings().first()
         if not me:
             return jsonify({"success": False, "error": "Forbidden"}), 403
+
+        # Rate limiting check - check last message from this user
+        last_message = conn.execute(
+            text("""
+                SELECT created_at 
+                FROM support_ticket_messages 
+                WHERE user_id = :user_id 
+                ORDER BY created_at DESC 
+                LIMIT 1
+            """),
+            {"user_id": user_id},
+        ).mappings().first()
+
+        if last_message:
+            last_msg_time = last_message["created_at"]
+            # Handle different datetime formats
+            if isinstance(last_msg_time, str):
+                try:
+                    last_msg_time = datetime.fromisoformat(last_msg_time.replace('Z', '+00:00'))
+                except ValueError:
+                    # Try parsing with different format
+                    last_msg_time = datetime.strptime(last_msg_time, '%Y-%m-%d %H:%M:%S.%f')
+            # Ensure timezone-aware datetime
+            if last_msg_time.tzinfo is None:
+                last_msg_time = last_msg_time.replace(tzinfo=timezone.utc)
+            
+            time_diff = (datetime.now(timezone.utc) - last_msg_time).total_seconds()
+            if time_diff < MESSAGE_COOLDOWN_SECONDS:
+                remaining = MESSAGE_COOLDOWN_SECONDS - time_diff
+                return jsonify({
+                    "success": False,
+                    "error": f"Please wait {remaining:.1f} more second(s) before sending another message."
+                }), 429
 
         ticket = conn.execute(
             text("SELECT id, pharmacy_id, status FROM support_tickets WHERE id = :tid"),
@@ -329,6 +375,20 @@ def add_ticket_message(ticket_id: int):
             )
 
         conn.commit()
+
+        # Get full message details with user info for WebSocket
+        full_message = conn.execute(
+            text("""
+                SELECT 
+                    m.id, m.ticket_id, m.user_id, m.message, m.is_internal, m.attachments, m.created_at,
+                    u.first_name || ' ' || u.last_name as user_name,
+                    u.role as user_role
+                FROM support_ticket_messages m
+                LEFT JOIN users u ON u.id = m.user_id
+                WHERE m.id = :msg_id
+            """),
+            {"msg_id": result["id"]}
+        ).mappings().first()
 
         return jsonify({"success": True, "message": dict(result)})
 
@@ -478,6 +538,12 @@ def create_announcement():
         if not title or not content:
             return jsonify({"success": False, "error": "Title and content are required"}), 400
 
+        # Word count validation (max 2000 words)
+        MAX_WORDS = 2000
+        word_count = len([w for w in content.split() if w.strip()])
+        if word_count > MAX_WORDS:
+            return jsonify({"success": False, "error": f"Content exceeds the maximum word limit of {MAX_WORDS} words. Current word count: {word_count}"}), 400
+
         if announcement_type not in ("info", "warning", "urgent", "update"):
             announcement_type = "info"
 
@@ -515,6 +581,8 @@ def list_announcements():
     status_filter = request.args.get("status", "all")
     pinned_filter = request.args.get("pinned", "all")
     search = request.args.get("search", "").strip()
+    date_from = request.args.get("date_from", "").strip()
+    date_to = request.args.get("date_to", "").strip()
 
     page = max(1, page)
     per_page = min(max(1, per_page), 100)
@@ -556,6 +624,14 @@ def list_announcements():
         if search:
             where_conditions.append("(a.title ILIKE :search OR a.content ILIKE :search)")
             params["search"] = f"%{search}%"
+
+        if date_from:
+            where_conditions.append("DATE(a.created_at) >= :date_from")
+            params["date_from"] = date_from
+
+        if date_to:
+            where_conditions.append("DATE(a.created_at) <= :date_to")
+            params["date_to"] = date_to
 
         where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
 
@@ -627,8 +703,14 @@ def update_announcement(announcement_id: int):
             params["title"] = (data["title"] or "").strip()
 
         if "content" in data:
+            content = (data["content"] or "").strip()
+            # Word count validation (max 2000 words)
+            MAX_WORDS = 2000
+            word_count = len([w for w in content.split() if w.strip()])
+            if word_count > MAX_WORDS:
+                return jsonify({"success": False, "error": f"Content exceeds the maximum word limit of {MAX_WORDS} words. Current word count: {word_count}"}), 400
             updates.append("content = :content")
-            params["content"] = (data["content"] or "").strip()
+            params["content"] = content
 
         if "type" in data and data["type"] in ("info", "warning", "urgent", "update"):
             updates.append("type = :type")

@@ -4,7 +4,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { SupportAPI } from '../../services/api';
 
 const SupportTickets = () => {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -54,6 +54,8 @@ const SupportTickets = () => {
     loadTickets();
   }, [loadTickets]);
 
+  // WebSocket functionality removed per latest requirements
+
   const handleCreateTicket = async (e) => {
     e.preventDefault();
     if (!newTicket.subject.trim()) {
@@ -92,6 +94,7 @@ const SupportTickets = () => {
       if (res.success) {
         setNewMessage('');
         loadTicketDetails(selectedTicket.ticket.id);
+        loadTickets();
       }
     } catch (e) {
       setError(e.message || 'Failed to send message');
@@ -193,7 +196,8 @@ const SupportTickets = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <>
+      <div className="space-y-6">
       <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl p-7 lg:p-8 text-white">
         <div className="flex items-center justify-between">
           <div>
@@ -333,9 +337,25 @@ const SupportTickets = () => {
       )}
 
       {/* Create Ticket Modal */}
+      </div>
+
       {showCreateModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-slate-950 rounded-2xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm px-4 py-0">
+          <div className="bg-white dark:bg-slate-950 rounded-3xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col">
+            <div className="px-6 py-5 border-b border-gray-200 dark:border-slate-800 flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-slate-400">Create ticket</p>
+                <h2 className="text-2xl font-bold text-gray-900 dark:text-slate-100 mt-1">Need a hand?</h2>
+              </div>
+              <button
+                onClick={() => setShowCreateModal(false)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-900 transition"
+                aria-label="Close create ticket modal"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="px-6 py-6 overflow-y-auto">
             <h2 className="text-2xl font-bold mb-4 text-gray-900 dark:text-slate-100">Create New Ticket</h2>
             <form onSubmit={handleCreateTicket} className="space-y-4">
               <div>
@@ -398,16 +418,17 @@ const SupportTickets = () => {
                 </button>
               </div>
             </form>
+            </div>
           </div>
         </div>
       )}
 
       {/* Ticket Detail Modal */}
       {selectedTicket && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-slate-950 rounded-xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-gray-200 dark:border-slate-800">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/85 backdrop-blur-sm px-3 sm:px-6 py-0">
+          <div className="bg-white dark:bg-slate-950 rounded-3xl max-w-5xl w-full max-h-[90vh] flex flex-col shadow-[0_25px_80px_rgba(15,23,42,0.25)] overflow-hidden">
             {/* Header */}
-            <div className="px-6 py-5 border-b border-gray-200 dark:border-slate-800 bg-gradient-to-r from-gray-50 to-white dark:from-slate-900 dark:to-slate-950">
+            <div className="px-6 py-5 border-b border-gray-200 dark:border-slate-800 bg-gradient-to-r from-blue-50 via-white to-transparent dark:from-slate-900 dark:via-slate-950">
               <div className="flex items-start justify-between mb-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-3 flex-wrap">
@@ -468,26 +489,59 @@ const SupportTickets = () => {
             {/* Messages - Scrollable */}
             <div className="flex-1 overflow-y-auto px-6 py-5">
               <h3 className="text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide mb-4">Conversation</h3>
-              <div className="space-y-4">
+              <div className="space-y-3">
                 {selectedTicket.messages && selectedTicket.messages.length > 0 ? (
-                  selectedTicket.messages.map((msg) => (
-                    <div key={msg.id} className="flex gap-3 group">
-                      <div className="flex-shrink-0 w-10 h-10 bg-gradient-to-br from-blue-500 to-blue-600 dark:from-blue-600 dark:to-blue-700 rounded-full flex items-center justify-center shadow-sm ring-2 ring-blue-100 dark:ring-blue-900/50">
-                        <span className="text-white text-sm font-semibold">
-                          {msg.user_name?.charAt(0).toUpperCase() || 'U'}
-                        </span>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-baseline gap-2 mb-1.5">
-                          <span className="font-semibold text-sm text-gray-900 dark:text-slate-100">{msg.user_name || 'Unknown'}</span>
-                          <span className="text-xs text-gray-500 dark:text-slate-400">{formatDate(msg.created_at)}</span>
+                  selectedTicket.messages.map((msg, index) => {
+                    const showDateSeparator = index === 0 || new Date(msg.created_at).toDateString() !== new Date(selectedTicket.messages[index - 1].created_at).toDateString();
+                    const isCurrentUser = !!(user && msg.user_id === user.id);
+                    return (
+                      <div key={msg.id}>
+                        {showDateSeparator && (
+                          <div className="flex items-center gap-2 my-3">
+                            <div className="flex-1 h-px bg-gray-200 dark:bg-slate-800"></div>
+                            <span className="text-[11px] font-medium text-gray-500 dark:text-slate-400 px-2 py-0.5 bg-gray-100 dark:bg-slate-900 rounded-full border border-gray-200 dark:border-slate-800">
+                              {new Date(msg.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                            </span>
+                            <div className="flex-1 h-px bg-gray-200 dark:bg-slate-800"></div>
+                          </div>
+                        )}
+                        <div className={`flex gap-2 ${isCurrentUser ? 'flex-row-reverse' : 'flex-row'}`}>
+                          {!isCurrentUser && (
+                            <div className="flex-shrink-0">
+                              <div className="w-9 h-9 bg-gradient-to-br from-blue-500 to-indigo-600 dark:from-blue-600 dark:to-indigo-700 rounded-full flex items-center justify-center shadow-md">
+                                <span className="text-white text-xs font-semibold">
+                                  {msg.user_name?.charAt(0).toUpperCase() || 'U'}
+                                </span>
+                              </div>
+                            </div>
+                          )}
+                          <div className={`flex flex-col ${isCurrentUser ? 'items-end' : 'items-start'} max-w-[75%]`}>
+                            {!isCurrentUser && (
+                              <div className="flex items-center gap-1.5 mb-1 px-1">
+                                <span className="font-semibold text-xs text-gray-700 dark:text-slate-200">{msg.user_name || 'Unknown'}</span>
+                                {msg.is_internal && (
+                                  <span className="text-[10px] px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 rounded font-medium">Internal</span>
+                                )}
+                              </div>
+                            )}
+                            <div
+                              className={`rounded-2xl px-4 py-3 text-sm shadow-sm ${
+                                isCurrentUser
+                                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-br-sm'
+                                  : 'bg-white dark:bg-slate-900 text-gray-800 dark:text-slate-200 border border-gray-200 dark:border-slate-800 rounded-bl-sm'
+                              }`}
+                            >
+                              <p className="whitespace-pre-wrap leading-relaxed">{msg.message}</p>
+                            </div>
+                            <span className={`text-[11px] text-gray-500 dark:text-slate-400 mt-1 px-1 ${isCurrentUser ? 'text-right' : 'text-left'}`}>
+                              {formatDate(msg.created_at)}
+                            </span>
+                          </div>
+                          {isCurrentUser && <div className="w-9 flex-shrink-0"></div>}
                         </div>
-                        <div className="bg-white dark:bg-slate-900 rounded-lg px-4 py-3 text-sm text-gray-700 dark:text-slate-300 border border-gray-200 dark:border-slate-800 shadow-sm group-hover:shadow transition-shadow">
-                          <p className="whitespace-pre-wrap leading-relaxed">{msg.message}</p>
-                        </div>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <div className="text-center py-12">
                     <MessageSquare className="w-12 h-12 text-gray-300 dark:text-slate-700 mx-auto mb-3" />
@@ -524,7 +578,7 @@ const SupportTickets = () => {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 };
 

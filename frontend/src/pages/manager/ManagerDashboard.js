@@ -3,6 +3,26 @@ import { Users, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { ManagerAPI, POSAPI, InventoryAPI } from '../../services/api';
 
+const SectionCard = ({ title, subtitle, action, children, className = '', ...rest }) => (
+  <section
+    {...rest}
+    className={`bg-white dark:bg-slate-950 border border-gray-200 dark:border-slate-800 rounded-2xl shadow-sm p-6 ${className}`}
+  >
+    {(title || subtitle || action) && (
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+        <div>
+          {title && <h2 className="text-lg font-semibold text-gray-900 dark:text-slate-100">{title}</h2>}
+          {subtitle && <p className="text-sm text-gray-500 dark:text-slate-400">{subtitle}</p>}
+        </div>
+        {action}
+      </div>
+    )}
+    {children}
+  </section>
+);
+
+const formatCurrency = (value) => (value ?? 0).toLocaleString('en-PH', { style: 'currency', currency: 'PHP' });
+
 const ManagerDashboard = () => {
   const { token, user } = useAuth();
   // eslint-disable-next-line no-unused-vars
@@ -215,8 +235,6 @@ const ManagerDashboard = () => {
     };
   }, [token]);
 
-  const formatCurrency = (value) => (value ?? 0).toLocaleString('en-PH', { style: 'currency', currency: 'PHP' });
-
   // No generic stat grid; focus on requested KPIs only
 
   // Aggregate sales for last 7 days
@@ -292,22 +310,62 @@ const ManagerDashboard = () => {
     };
   }, [sustainability, overview, expiryRisk]);
 
-  // Donut chart segments from values
-  const wasteDonut = useMemo(() => {
-    const segments = [
-      { label: 'Expired', value: wasteSplit.expired, color: '#ef4444' },
-      { label: 'Expiring', value: wasteSplit.expiring, color: '#f59e0b' },
-      { label: 'Healthy', value: wasteSplit.safe, color: '#059669' },
+  const activeStaff = useMemo(() => staff.filter(s => s.active !== false).length, [staff]);
+
+  const totalInventoryValue = useMemo(
+    () => overview?.inventory?.total_value ?? wasteSplit.total ?? 0,
+    [overview, wasteSplit.total]
+  );
+  const totalWeeklySales = useMemo(
+    () => salesLast7.reduce((sum, day) => sum + (day.total || 0), 0),
+    [salesLast7]
+  );
+  const sustainabilityScore = useMemo(
+    () => sustainability?.score ?? overview?.sustainability?.score ?? null,
+    [sustainability, overview]
+  );
+  const snapshotMetrics = useMemo(() => {
+    const metrics = [
+      {
+        label: 'Active Staff',
+        value: activeStaff,
+        helper: 'on duty today',
+        icon: Users,
+        badgeClass: 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-200'
+      },
+      {
+        label: 'Pending Approvals',
+        value: pendingApprovals,
+        helper: 'awaiting review',
+        icon: AlertTriangle,
+        badgeClass: 'bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-200'
+      },
+      {
+        label: 'Weekly Sales',
+        value: formatCurrency(totalWeeklySales),
+        helper: 'last 7 days',
+        badgeText: '₱',
+        badgeClass: 'bg-indigo-100 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-200'
+      },
+      {
+        label: 'Inventory Value',
+        value: formatCurrency(totalInventoryValue),
+        helper: 'current stock',
+        badgeText: 'INV',
+        badgeClass: 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-200'
+      }
     ];
-    const total = Math.max(segments.reduce((a, s) => a + (s.value || 0), 0), 1);
-    let cumulative = 0;
-    return segments.map((s) => {
-      const start = cumulative / total;
-      const delta = (s.value || 0) / total;
-      cumulative += delta;
-      return { ...s, start, end: start + delta, pct: Math.round(delta * 100) };
-    });
-  }, [wasteSplit]);
+    if (sustainabilityScore != null) {
+      metrics.push({
+        label: 'Sustainability Score',
+        value: `${sustainabilityScore}/100`,
+        helper: 'waste & energy index',
+        badgeText: 'Eco',
+        badgeClass: 'bg-lime-100 text-lime-600 dark:bg-lime-900/30 dark:text-lime-200'
+      });
+    }
+    return metrics;
+  }, [activeStaff, pendingApprovals, totalWeeklySales, totalInventoryValue, sustainabilityScore]);
 
   // eslint-disable-next-line no-unused-vars
   const recentActivities = useMemo(() => {
@@ -316,7 +374,7 @@ const ManagerDashboard = () => {
   }, [overview]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pb-10">
       {error && (
         <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-300 rounded-lg px-4 py-3">
           {error}
@@ -324,111 +382,72 @@ const ManagerDashboard = () => {
       )}
       {/* Header */}
       <div className="bg-gradient-to-r from-blue-600 to-purple-600 rounded-2xl p-7 text-white">
-        <h1 className="text-3xl font-bold mb-2">Welcome {user?.name || user?.full_name || 'Manager'}</h1>
-        <p className="text-blue-100">{pharmacy?.name || 'Your Pharmacy'}</p>
-      </div>
-
-      
-
-      {/* Approval and staff quick KPIs */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-        <div className="bg-white dark:bg-slate-950 rounded-2xl p-6 shadow-sm border border-gray-200 dark:border-slate-800">
-          <div className="flex items-center justify-between">
-                  <div>
-              <p className="text-sm font-medium text-gray-600 dark:text-slate-300">Active Staff</p>
-              <p className="text-2xl font-bold text-gray-900 dark:text-slate-100 mt-1">{staff.filter(s => s.active !== false).length}</p>
-                  </div>
-            <Users className="w-7 h-7 text-gray-500 dark:text-slate-400" />
-          </div>
-        </div>
-        <div className="bg-white dark:bg-slate-950 rounded-2xl p-6 shadow-sm border border-gray-200 dark:border-slate-800">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600 dark:text-slate-300">Approval Requests</p>
-              <p className="text-2xl font-bold text-gray-900 dark:text-slate-100 mt-1">{pendingApprovals}</p>
-                </div>
-            <AlertTriangle className="w-7 h-7 text-orange-500" />
-          </div>
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-white/70">Manager Command Center</p>
+          <h1 className="text-3xl font-bold">Welcome, {user?.name || user?.full_name || 'Manager'}</h1>
+          <p className="text-blue-100">{pharmacy?.name || 'Your Pharmacy'}</p>
         </div>
       </div>
 
-      {/* Waste analysis and Sales chart */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Waste analysis donut chart */}
-        <div className="bg-white dark:bg-slate-950 rounded-2xl p-6 shadow-sm border border-gray-200 dark:border-slate-800">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-slate-100 mb-4">
-            Waste Analysis
-            {loadingHeavy && !sustainability && !expiryRisk && (
-              <span className="ml-2 text-xs text-gray-500">Loading...</span>
-            )}
-          </h2>
-          <div className="flex items-center gap-6">
-            <svg width="160" height="160" viewBox="0 0 32 32" className="flex-shrink-0">
-              <defs>
-                <mask id="donut-hole"><rect x="0" y="0" width="32" height="32" fill="white" /><circle cx="16" cy="16" r="8" fill="black" /></mask>
-              </defs>
-              <g mask="url(#donut-hole)">
-                {wasteDonut.map((seg, idx) => {
-                  const startAngle = 2 * Math.PI * seg.start - Math.PI / 2;
-                  const endAngle = 2 * Math.PI * seg.end - Math.PI / 2;
-                  const x1 = 16 + 14 * Math.cos(startAngle);
-                  const y1 = 16 + 14 * Math.sin(startAngle);
-                  const x2 = 16 + 14 * Math.cos(endAngle);
-                  const y2 = 16 + 14 * Math.sin(endAngle);
-                  const largeArc = seg.end - seg.start > 0.5 ? 1 : 0;
-                  const d = `M 16 16 L ${x1} ${y1} A 14 14 0 ${largeArc} 1 ${x2} ${y2} Z`;
-                  return <path key={idx} d={d} fill={seg.color} />;
-                })}
-              </g>
-              <circle cx="16" cy="16" r="9" fill="transparent" />
-              <text x="16" y="16" textAnchor="middle" dominantBaseline="central" fontSize="3" fill="#64748b">{Math.round(wasteSplit.pExpired + wasteSplit.pExpiring)}% risk</text>
-            </svg>
-            <div className="grid grid-cols-1 gap-2 text-sm">
-              {wasteDonut.map((seg) => (
-                <div key={seg.label} className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: seg.color }} />
-                  <span className="text-gray-700 dark:text-slate-300">{seg.label}: {formatCurrency(wasteSplit[seg.label.toLowerCase()] || seg.value)} ({seg.pct}%)</span>
+      <section className="rounded-3xl border border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-950/70 p-6 shadow-sm">
+        <div className="flex flex-wrap items-end justify-between gap-3 mb-5">
+          <div>
+            <p className="text-sm uppercase tracking-wide text-gray-400 dark:text-slate-500">Operational Snapshot</p>
+            <h2 className="text-2xl font-semibold text-gray-900 dark:text-slate-100">Today's key metrics</h2>
+          </div>
+          <span className="text-xs font-medium text-gray-500 dark:text-slate-400">Auto-refreshed every load</span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {snapshotMetrics.map((metric) => (
+            <div
+              key={metric.label}
+              className="rounded-2xl border border-gray-100 dark:border-slate-800/70 bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-900/60 p-5 flex flex-col gap-4 shadow-sm"
+            >
+              <div className="flex items-center gap-3">
+                <span className={`flex h-11 w-11 items-center justify-center rounded-xl text-sm font-semibold ${metric.badgeClass}`}>
+                  {metric.icon ? <metric.icon className="w-5 h-5" /> : metric.badgeText}
+                </span>
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-slate-400">{metric.label}</p>
+                  {metric.helper && <p className="text-[11px] text-gray-400 dark:text-slate-500">{metric.helper}</p>}
                 </div>
-              ))}
-              <div className="text-xs text-gray-500 dark:text-slate-400 mt-1">Total inventory considered: {formatCurrency(wasteSplit.total)}</div>
+              </div>
+              <p className="text-3xl font-semibold text-gray-900 dark:text-slate-100">{metric.value}</p>
             </div>
-          </div>
+          ))}
         </div>
+      </section>
 
-        {/* Sales mini bar chart */}
-        <div className="bg-white dark:bg-slate-950 rounded-2xl p-6 shadow-sm border border-gray-200 dark:border-slate-800">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-slate-100 mb-4">
-            Sales (Last 7 days)
-            {loadingHeavy && transactions.length === 0 && (
-              <span className="ml-2 text-xs text-gray-500">Loading...</span>
-            )}
-          </h2>
-          <div className="h-40 flex items-end gap-2">
-            {salesLast7.map((d) => {
-              const max = Math.max(1, ...salesLast7.map(x => x.total));
-              const height = Math.max(4, Math.round((d.total / max) * 140));
-              return (
-                <div key={d.date} className="flex-1 flex flex-col items-center">
-                  <div className="w-full bg-blue-600 rounded-t-md" style={{ height }} />
-                  <div className="mt-1 text-[10px] text-gray-500 dark:text-slate-400">{d.date.slice(5)}</div>
-                </div>
-              );
-            })}
-          </div>
-          <div className="mt-3 text-sm text-gray-700 dark:text-slate-300">Total: {formatCurrency(salesLast7.reduce((a,b)=>a+b.total,0))}</div>
+      <SectionCard
+        title="Sales (Last 7 Days)"
+        subtitle="POS transactions summarized daily"
+        action={loadingHeavy && transactions.length === 0 ? <span className="text-xs text-gray-500">Updating…</span> : null}
+      >
+        <div className="h-48 flex items-end gap-3">
+          {salesLast7.map((d) => {
+            const max = Math.max(1, ...salesLast7.map(x => x.total));
+            const height = Math.max(4, Math.round((d.total / max) * 150));
+            return (
+              <div key={d.date} className="flex-1 flex flex-col items-center">
+                <div className="w-full rounded-t-lg bg-gradient-to-t from-blue-600 to-blue-400" style={{ height }} />
+                <div className="mt-2 text-[11px] font-medium text-gray-500 dark:text-slate-400">{d.date.slice(5)}</div>
+              </div>
+            );
+          })}
         </div>
-      </div>
+        <div className="mt-4 flex items-center justify-between text-sm text-gray-600 dark:text-slate-300">
+          <span>Total sales</span>
+          <span className="text-base font-semibold text-gray-900 dark:text-slate-100">{formatCurrency(salesLast7.reduce((a,b)=>a+b.total,0))}</span>
+        </div>
+      </SectionCard>
 
       {/* ABC-VED Matrix (compact panel) */}
-      <div className="bg-white dark:bg-slate-950 rounded-2xl p-6 shadow-sm border border-gray-200 dark:border-slate-800">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-slate-100">
-            ABC–VED
-            {loadingHeavy && !abcved && (
-              <span className="ml-2 text-xs text-gray-500">Loading...</span>
-            )}
-          </h2>
-          <div className="flex items-center gap-3">
+      <SectionCard
+        id="abcved-section"
+        title="ABC–VED Matrix"
+        subtitle="Focus procurement on the intersections with the highest value and clinical impact"
+        action={(
+          <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={()=>setSimpleMode(v=>!v)}
@@ -438,50 +457,54 @@ const ManagerDashboard = () => {
             </button>
             <div className="text-sm text-gray-500 dark:text-slate-400">{abcved?.from?.slice(0,10)} – {abcved?.to?.slice(0,10)}</div>
           </div>
-        </div>
-
-        {/* Simple view for managers */}
+        )}
+      >
         {simpleMode && (
-          <div className="space-y-3">
-            <p className="text-sm text-gray-700 dark:text-slate-300">Quick guide: Buy first the items in Priority Now. Keep Watchlist items from running out. Low Priority can wait.</p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {/* Priority Now: A–V + A–E */}
-              <div className="rounded-xl border border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-950 p-4">
-                <div className="text-xs font-medium text-gray-500 dark:text-slate-400 mb-1">Priority Now</div>
-                <div className="text-2xl font-bold text-gray-900 dark:text-slate-100 mb-2">{(abcved?.matrix_counts?.['A-V']||0)+(abcved?.matrix_counts?.['A-E']||0)}</div>
-                <ul className="text-sm text-gray-700 dark:text-slate-300 space-y-1">
-                  {(() => {
-                    const items = (abcved?.items||[]).filter(i => (i.abc_class==='A' && (i.ved_class==='V'||i.ved_class==='E')))
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
+            {[
+              {
+                title: 'Priority Now',
+                value: (abcved?.matrix_counts?.['A-V']||0)+(abcved?.matrix_counts?.['A-E']||0),
+                description: 'Vital & essential A items. Reorder first.',
+                gradient: 'from-orange-500/10 to-red-500/10',
+                items: (abcved?.items||[]).filter(i => (i.abc_class==='A' && (i.ved_class==='V'||i.ved_class==='E')))
+              },
+              {
+                title: 'Watchlist',
+                value: abcved?.matrix_counts?.['B-V']||0,
+                description: 'Monitor B–V weekly to avoid stock-outs.',
+                gradient: 'from-blue-500/10 to-sky-500/10',
+                items: (abcved?.items||[]).filter(i => (i.abc_class==='B' && i.ved_class==='V'))
+              },
+              {
+                title: 'Low Priority',
+                value: abcved?.matrix_counts?.['C-D']||0,
+                description: 'Order C–D only when needed.',
+                gradient: 'from-emerald-500/10 to-lime-500/10',
+                items: []
+              }
+            ].map(panel => (
+              <div key={panel.title} className={`rounded-2xl border border-gray-200 dark:border-slate-800 bg-gradient-to-br ${panel.gradient} p-5 shadow-sm`}>
+                <p className="text-sm font-semibold text-gray-900 dark:text-slate-100">{panel.title}</p>
+                <p className="text-3xl font-bold text-gray-900 dark:text-slate-100 mt-1">{panel.value}</p>
+                <p className="text-xs text-gray-600 dark:text-slate-300 mt-2">{panel.description}</p>
+                {panel.items.length > 0 && (
+                  <ul className="mt-3 space-y-1 text-sm text-gray-800 dark:text-slate-200">
+                    {panel.items
                       .sort((a,b)=>Number(b.consumption_value||0)-Number(a.consumption_value||0))
-                      .slice(0,3);
-                    return items.length? items.map(it => <li key={it.id||it.name} className="truncate" title={it.name}>{it.name}</li>) : <li className="text-xs text-gray-500 dark:text-slate-400">No items</li>;
-                  })()}
-                </ul>
-                <div className="mt-2 text-xs text-gray-500 dark:text-slate-400">Action: Reorder and keep safety stock.</div>
+                      .slice(0,3)
+                      .map(it => (
+                        <li key={it.id||it.name} className="truncate" title={it.name}>
+                          {it.name}
+                        </li>
+                      ))}
+                  </ul>
+                )}
               </div>
-              {/* Watchlist: B–V */}
-              <div className="rounded-xl border border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-950 p-4">
-                <div className="text-xs font-medium text-gray-500 dark:text-slate-400 mb-1">Watchlist</div>
-                <div className="text-2xl font-bold text-gray-900 dark:text-slate-100 mb-2">{abcved?.matrix_counts?.['B-V']||0}</div>
-                <ul className="text-sm text-gray-700 dark:text-slate-300 space-y-1">
-                  {(() => {
-                    const items = (abcved?.items||[]).filter(i => (i.abc_class==='B' && i.ved_class==='V'))
-                      .sort((a,b)=>Number(b.consumption_value||0)-Number(a.consumption_value||0))
-                      .slice(0,3);
-                    return items.length? items.map(it => <li key={it.id||it.name} className="truncate" title={it.name}>{it.name}</li>) : <li className="text-xs text-gray-500 dark:text-slate-400">No items</li>;
-                  })()}
-                </ul>
-                <div className="mt-2 text-xs text-gray-500 dark:text-slate-400">Action: Monitor weekly, avoid stock-outs.</div>
-              </div>
-              {/* Low Priority: C–D */}
-              <div className="rounded-xl border border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-950 p-4">
-                <div className="text-xs font-medium text-gray-500 dark:text-slate-400 mb-1">Low Priority</div>
-                <div className="text-2xl font-bold text-gray-900 dark:text-slate-100 mb-2">{abcved?.matrix_counts?.['C-D']||0}</div>
-                <div className="text-sm text-gray-700 dark:text-slate-300">Action: Order only when needed.</div>
-              </div>
-            </div>
+            ))}
           </div>
         )}
+
         {/* Advanced controls removed per request */}
         {!simpleMode && abcved?.matrix_counts ? (
           <div className="overflow-x-auto">
@@ -489,11 +512,25 @@ const ManagerDashboard = () => {
               <div className="grid grid-cols-4 gap-px bg-gray-200 dark:bg-slate-800 rounded-lg overflow-hidden">
                 <div className="bg-gray-50 dark:bg-slate-900 p-3 text-xs font-medium text-gray-600 dark:text-slate-300"></div>
                 {['V','E','D'].map(h => (
-                  <div key={h} className="bg-gray-50 dark:bg-slate-900 p-3 text-xs font-medium text-gray-600 dark:text-slate-300 text-center">{h}</div>
+                  <div key={h} className="bg-gray-50 dark:bg-slate-900 p-3 text-xs font-medium text-gray-600 dark:text-slate-300 text-center">
+                    <div>{h}</div>
+                    <div className="text-[10px] text-gray-400 dark:text-slate-500 mt-1">
+                      {h === 'V' && 'Must never stock-out'}
+                      {h === 'E' && 'Needed for daily ops'}
+                      {h === 'D' && 'Nice-to-have'}
+                    </div>
+                  </div>
                 ))}
                 {['A','B','C'].map(row => (
                   <React.Fragment key={row}>
-                    <div className="bg-gray-50 dark:bg-slate-900 p-3 text-xs font-medium text-gray-700 dark:text-slate-200">{row}</div>
+                    <div className="bg-gray-50 dark:bg-slate-900 p-3 text-xs font-medium text-gray-700 dark:text-slate-200">
+                      <div>{row}</div>
+                      <div className="text-[10px] text-gray-400 dark:text-slate-500 mt-1">
+                        {row === 'A' && 'Top peso impact'}
+                        {row === 'B' && 'Mid impact'}
+                        {row === 'C' && 'Low spend'}
+                      </div>
+                    </div>
                     {['V','E','D'].map(col => {
                       const key = `${row}-${col}`;
                       const val = abcved.matrix_counts[key] ?? 0;
@@ -529,13 +566,13 @@ const ManagerDashboard = () => {
         {/* Explainer toggle */}
         <div className="mt-3">
           <button type="button" onClick={() => setShowABCHelp(v => !v)} className="text-sm text-blue-600 dark:text-blue-400 hover:underline">
-            {showABCHelp ? 'Hide' : 'What is ABC–VED?'}
+            {showABCHelp ? 'Hide quick explainer' : 'What is ABC–VED?'}
           </button>
           {showABCHelp && (
             <div className="mt-2 text-sm text-gray-700 dark:text-slate-300 space-y-1">
-              <p><span className="font-semibold">ABC</span> ranks items by money impact (usage × cost): A = highest value share, B = medium, C = lowest.</p>
-              <p><span className="font-semibold">VED</span> ranks items by importance to care: V = vital (must-have), E = essential, D = desirable.</p>
-              <p>The grid combines both to guide ordering: prioritize A–V, then A–E and B–V. Thresholds default to 70% (A) and 90% (B) but can be tuned.</p>
+              <p><span className="font-semibold">ABC</span> sorts stock by peso impact. A-items drive most sales or usage, C-items contribute the least.</p>
+              <p><span className="font-semibold">VED</span> tells you how critical the medicine is: V is life-or-death, E keeps care running, D can wait.</p>
+              <p>Read the matrix like a heatmap. A–V needs constant cover, A–E/B–V get weekly reviews, C–D can be restocked only when demanded.</p>
             </div>
           )}
         </div>
@@ -644,7 +681,7 @@ const ManagerDashboard = () => {
             </div>
           )}
         </div>
-      </div>
+      </SectionCard>
     </div>
   );
 };

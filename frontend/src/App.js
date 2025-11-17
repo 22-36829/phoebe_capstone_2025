@@ -3,6 +3,10 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import LandingPage from './pages/LandingPage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
+import TermsOfService from './pages/TermsOfService';
+import PrivacyPolicy from './pages/PrivacyPolicy';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 import AdminLayout from './layouts/AdminLayout';
 import ManagerLayout from './layouts/ManagerLayout';
 import { AdminDashboard, SubscriptionsPage, AccountsPage, AnnouncementsPage, ChatPage } from './pages/admin';
@@ -66,6 +70,10 @@ function App() {
             <Route path="/" element={<LandingPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
+            <Route path="/terms" element={<TermsOfService />} />
+            <Route path="/privacy" element={<PrivacyPolicy />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/admin" element={<RequireAuth roles={["admin"]}><AdminLayout /></RequireAuth>}>
               <Route index element={<AdminDashboard />} />
               <Route path="subscriptions" element={<SubscriptionsPage />} />
@@ -92,6 +100,7 @@ function App() {
               <Route path="pos" element={<StaffPOS />} />
               <Route path="own-sales" element={<OwnSales />} />
               <Route path="waste-expiry" element={<WasteExpiry />} />
+              <Route path="sustainability" element={<Sustainability />} />
               <Route path="ai" element={<AIRecommendations />} />
             </Route>
           </Routes>

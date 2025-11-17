@@ -30,6 +30,13 @@ def create_inventory_request():
     reason = data.get('reason', '')
     if qty is None or product_id is None:
         return jsonify({'success': False, 'error': 'product_id and quantity_change are required'}), 400
+    # Validate quantity is not zero (allow positive for additions and negative for reductions)
+    try:
+        qty_int = int(qty)
+        if qty_int == 0:
+            return jsonify({'success': False, 'error': 'Quantity must not be zero'}), 400
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': 'Invalid quantity value'}), 400
     with engine.begin() as conn:
         me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
         if not me:
@@ -77,10 +84,12 @@ def list_inventory_requests():
                    ub.email as requested_by_email,
                    ub.first_name as requested_by_first_name,
                    ub.last_name as requested_by_last_name,
+                   ub.role as requested_by_role,
                    r.approved_by,
                    ua.email as approved_by_email,
                    ua.first_name as approved_by_first_name,
                    ua.last_name as approved_by_last_name,
+                   ua.role as approved_by_role,
                    r.created_at, r.decided_at
             from inventory_adjustment_requests r
             join products p on p.id = r.product_id
@@ -106,6 +115,34 @@ def approve_inventory_request(req_id: int):
             return jsonify({'success': False, 'error': 'Request not found'}), 404
         if req['status'] != 'pending':
             return jsonify({'success': False, 'error': 'Request already decided'}), 400
+        # For disposal of expired products, don't update current_stock directly
+        # because expired batches are already excluded from stock calculations
+        # The disposal is just a record that the expired products were disposed
+        if req['reason'] == 'Expired - Disposed' and req['quantity_change'] < 0:
+            # Just mark as approved - don't update inventory.current_stock
+            # Expired products are already excluded from batch calculations
+            conn.execute(text('''
+                update inventory_adjustment_requests set status = 'approved', approved_by = :uid, decided_at = now() where id = :id
+            '''), {'uid': user_id, 'id': req_id})
+            # Recalculate current_stock from batches (excluding expired and disposed)
+            batch_total = conn.execute(text('''
+                select coalesce(sum(quantity - sold_quantity),0) 
+                from inventory_batches 
+                where product_id = :pid 
+                and (expiration_date is null or expiration_date > current_date)
+            '''), {'pid': req['product_id']}).scalar() or 0
+            
+            conn.execute(text('''
+                insert into inventory (product_id, current_stock, last_updated) 
+                values (:pid, :total, now())
+                on conflict (product_id) do update set 
+                    current_stock = :total,
+                    last_updated = now()
+            '''), {'pid': req['product_id'], 'total': max(0, batch_total)})
+            
+            return jsonify({'success': True, 'new_stock': max(0, batch_total)})
+        
+        # For other adjustments (positive or negative), update current_stock normally
         inv = conn.execute(text('select current_stock from inventory where product_id = :pid'), {'pid': req['product_id']}).mappings().first()
         current_stock = int(inv['current_stock']) if inv else 0
         new_stock = current_stock + int(req['quantity_change'])
@@ -148,18 +185,31 @@ def update_inventory_request(req_id: int):
         me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
         if not me:
             return jsonify({'success': False, 'error': 'User not found'}), 404
-        req = conn.execute(text('select id, requested_by, status from inventory_adjustment_requests where id = :id'), {'id': req_id}).mappings().first()
+        req = conn.execute(text('select id, requested_by, status, pharmacy_id from inventory_adjustment_requests where id = :id'), {'id': req_id}).mappings().first()
         if not req:
             return jsonify({'success': False, 'error': 'Request not found'}), 404
-        if int(req['requested_by']) != int(user_id):
+        # Check pharmacy match
+        if int(req['pharmacy_id']) != int(me['pharmacy_id']):
+            return jsonify({'success': False, 'error': 'Request not found in your pharmacy'}), 404
+        # Allow requester or manager/admin to edit
+        isRequester = int(req['requested_by']) == int(user_id)
+        isManagerOrAdmin = me['role'] in ('manager', 'admin')
+        if not isRequester and not isManagerOrAdmin:
             return jsonify({'success': False, 'error': 'Forbidden'}), 403
         if req['status'] != 'pending':
             return jsonify({'success': False, 'error': 'Only pending requests can be edited'}), 400
         fields = []
         params = {'id': req_id}
         if 'quantity_change' in data and data['quantity_change'] is not None:
-            fields.append('quantity_change = :qty')
-            params['qty'] = int(data['quantity_change'])
+            # Validate quantity is not zero (allow positive for additions and negative for reductions)
+            try:
+                qty_int = int(data['quantity_change'])
+                if qty_int == 0:
+                    return jsonify({'success': False, 'error': 'Quantity must not be zero'}), 400
+                fields.append('quantity_change = :qty')
+                params['qty'] = qty_int
+            except (ValueError, TypeError):
+                return jsonify({'success': False, 'error': 'Invalid quantity value'}), 400
         if 'reason' in data:
             fields.append('reason = :reason')
             params['reason'] = data.get('reason') or ''

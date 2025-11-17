@@ -183,6 +183,82 @@ def admin_create_pharmacy():
 		except Exception as e:
 			return jsonify({'success': False, 'error': str(e)}), 400
 
+@admin_bp.patch('/api/admin/pharmacies/<int:pharmacy_id>/deactivate')
+@jwt_required()
+def admin_deactivate_pharmacy(pharmacy_id):
+	"""Deactivate a pharmacy and all its users (admin only)"""
+	user_id = get_jwt_identity()
+	
+	with engine.connect() as conn:
+		_require_admin(conn, user_id)
+		
+		try:
+			with engine.begin() as conn:
+				# Check if pharmacy exists
+				pharmacy = conn.execute(text('''
+					select id, name, is_active
+					from pharmacies
+					where id = :pharmacy_id
+				'''), {'pharmacy_id': pharmacy_id}).mappings().first()
+				
+				if not pharmacy:
+					return jsonify({'success': False, 'error': 'Pharmacy not found'}), 404
+				
+				# Deactivate all users associated with this pharmacy (except admin accounts)
+				users_deactivated = conn.execute(text('''
+					update users
+					set is_active = false, updated_at = now()
+					where pharmacy_id = :pharmacy_id and is_active = true and role != 'admin'
+					returning id
+				'''), {'pharmacy_id': pharmacy_id}).rowcount
+				
+				# Deactivate the pharmacy
+				conn.execute(text('''
+					update pharmacies
+					set is_active = false, updated_at = now()
+					where id = :pharmacy_id
+				'''), {'pharmacy_id': pharmacy_id})
+				
+				message = f'Pharmacy deactivated successfully'
+				if users_deactivated > 0:
+					message += f'. {users_deactivated} user(s) were also deactivated.'
+				
+				return jsonify({'success': True, 'message': message, 'users_deactivated': users_deactivated})
+		except Exception as e:
+			return jsonify({'success': False, 'error': str(e)}), 400
+
+@admin_bp.patch('/api/admin/pharmacies/<int:pharmacy_id>/activate')
+@jwt_required()
+def admin_activate_pharmacy(pharmacy_id):
+	"""Activate a pharmacy (admin only)"""
+	user_id = get_jwt_identity()
+	
+	with engine.connect() as conn:
+		_require_admin(conn, user_id)
+		
+		try:
+			with engine.begin() as conn:
+				# Check if pharmacy exists
+				pharmacy = conn.execute(text('''
+					select id, name, is_active
+					from pharmacies
+					where id = :pharmacy_id
+				'''), {'pharmacy_id': pharmacy_id}).mappings().first()
+				
+				if not pharmacy:
+					return jsonify({'success': False, 'error': 'Pharmacy not found'}), 404
+				
+				# Activate the pharmacy
+				conn.execute(text('''
+					update pharmacies
+					set is_active = true, updated_at = now()
+					where id = :pharmacy_id
+				'''), {'pharmacy_id': pharmacy_id})
+				
+				return jsonify({'success': True, 'message': 'Pharmacy activated successfully'})
+		except Exception as e:
+			return jsonify({'success': False, 'error': str(e)}), 400
+
 @admin_bp.get('/api/admin/pharmacy/<int:pharmacy_id>/storage')
 @jwt_required()
 def admin_get_pharmacy_storage(pharmacy_id):
@@ -408,6 +484,21 @@ def admin_reject_signup_request(request_id):
 # SUBSCRIPTION PLAN MANAGEMENT
 # =========================
 
+@admin_bp.get('/api/public/subscription-plans')
+def public_get_subscription_plans():
+	"""Get all active subscription plans with prices (public endpoint)"""
+	try:
+		with engine.connect() as conn:
+			rows = conn.execute(text('''
+				select id, plan_name, monthly_price, quarterly_price, semi_annual_price, annual_price, is_active
+				from subscription_plans
+				where is_active = true
+				order by monthly_price asc
+			''')).mappings().all()
+			return jsonify({'success': True, 'plans': [dict(r) for r in rows]})
+	except Exception as e:
+		return jsonify({'success': False, 'error': str(e)}), 500
+
 @admin_bp.get('/api/admin/subscription-plans')
 @jwt_required()
 def admin_get_subscription_plans():
@@ -420,7 +511,7 @@ def admin_get_subscription_plans():
 			from subscription_plans
 			where is_active = true
 			order by monthly_price asc
-		''')).mappings().all()
+''')).mappings().all()
 		return jsonify({'success': True, 'plans': [dict(r) for r in rows]})
 
 @admin_bp.post('/api/admin/subscription-plans')

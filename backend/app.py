@@ -5,6 +5,7 @@ from flask_cors import CORS
 from sqlalchemy import create_engine, text
 from sqlalchemy import inspect
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from dotenv import load_dotenv
 from flask_jwt_extended import JWTManager
 import bcrypt
@@ -64,8 +65,41 @@ except Exception as e:
 
 DATABASE_URL = get_database_url()
 
+_DB_CONNECT_TIMEOUT = int(os.getenv('DB_CONNECT_TIMEOUT', '5'))
+_ENGINE_KWARGS: dict[str, object] = {"pool_pre_ping": True}
+if DATABASE_URL.startswith("postgresql"):
+    _ENGINE_KWARGS["connect_args"] = {"connect_timeout": _DB_CONNECT_TIMEOUT}
+
+engine: Engine = create_engine(DATABASE_URL, **_ENGINE_KWARGS)
+
+SKIP_SCHEMA_BOOTSTRAP = os.getenv('SKIP_SCHEMA_BOOTSTRAP', 'false').lower() in ('1', 'true', 'yes')
+_database_available: bool | None = None
+
+
+def _database_is_available() -> bool:
+    """Return True when the primary database is reachable."""
+    global _database_available
+    if _database_available is not None:
+        return _database_available
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        _database_available = True
+    except OperationalError as exc:
+        logger.warning(
+            "Database connection failed (will skip DB bootstrap): %s", exc
+        )
+        _database_available = False
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.warning(
+            "Unexpected error while checking database availability: %s", exc
+        )
+        _database_available = False
+    return _database_available
+
+
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=False, expose_headers=["Authorization"], allow_headers=["Content-Type", "Authorization"], methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"]) 
+CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=False, expose_headers=["Authorization"], allow_headers=["Content-Type", "Authorization"], methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"])
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'dev-secret')
 app.config['SECRET_KEY'] = os.getenv('APP_SECRET_KEY', 'dev-app-secret')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)  # 24 hours instead of 15 minutes
@@ -90,8 +124,6 @@ def _jwt_expired(jwt_header, jwt_payload):
 def _forbidden(e):
 	return jsonify({'success': False, 'error': 'Forbidden'}), 403
 
-engine: Engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-
 # Database schema functions moved to database/schema.py
 from database.schema import (
 	ensure_returns_tables,
@@ -112,17 +144,29 @@ from database.schema import (
 # Schema function definitions moved to database/schema.py
 
 # Initialize database schema on startup
-ensure_set_updated_at_function()
-ensure_inventory_requests_table()
-ensure_products_location_column()
-ensure_pharmacy_deletion_requests_table()
-ensure_inventory_expiration_column()
-ensure_support_tickets_tables()
-ensure_announcements_table()
-ensure_subscription_status_enum()
-ensure_subscription_payment_fields()
-ensure_subscription_plans_table()
-ensure_pharmacy_signup_requests_table()
+def _run_schema_bootstrap() -> None:
+    if SKIP_SCHEMA_BOOTSTRAP:
+        logger.info("Skipping schema bootstrap (SKIP_SCHEMA_BOOTSTRAP=true)")
+        return
+    if not _database_is_available():
+        logger.info("Skipping schema bootstrap (database unavailable)")
+        return
+
+    ensure_set_updated_at_function()
+    ensure_inventory_requests_table()
+    ensure_products_location_column()
+    ensure_pharmacy_deletion_requests_table()
+    ensure_inventory_expiration_column()
+    ensure_support_tickets_tables()
+    ensure_announcements_table()
+    ensure_subscription_status_enum()
+    ensure_subscription_payment_fields()
+    ensure_subscription_plans_table()
+    ensure_pharmacy_signup_requests_table()
+    ensure_returns_tables()
+
+
+_run_schema_bootstrap()
 
 # Utility endpoint to export current DB schema (DDL only)
 @app.get('/api/_internal/schema')
@@ -301,14 +345,24 @@ def manifest():
 
 @app.get('/api/products')
 def get_products():
+	# Calculate current_stock from batches (available stock = delivered - sold, excluding expired)
 	query = text('''
 		select p.id, p.name, pc.name as category, p.unit_price, p.cost_price,
-		       coalesce(i.current_stock,0) as current_stock,
-		       coalesce(i.available_stock,0) as available_stock,
+		       coalesce((
+		           select sum(b.quantity - coalesce(b.sold_quantity, 0))
+		           from inventory_batches b
+		           where b.product_id = p.id
+		           and (b.expiration_date is null or b.expiration_date > current_date)
+		       ), 0) as current_stock,
+		       coalesce((
+		           select sum(b.quantity - coalesce(b.sold_quantity, 0))
+		           from inventory_batches b
+		           where b.product_id = p.id
+		           and (b.expiration_date is null or b.expiration_date > current_date)
+		       ), 0) as available_stock,
 		       p.location
 		from products p
 		left join product_categories pc on pc.id = p.category_id
-		left join inventory i on i.product_id = p.id
 		order by p.name asc
 		limit 500
 	''')
@@ -446,9 +500,13 @@ def initialize_ai_services():
         
         # Initialize enhanced AI service
         try:
-            from routes.ai_enhanced import _get_enhanced_ai_service
-            logger.info("Initializing enhanced AI service...")
-            service = _get_enhanced_ai_service()
+            if not _database_is_available():
+                logger.info("Skipping enhanced AI service initialization (database unavailable)")
+                service = None
+            else:
+                from routes.ai_enhanced import _get_enhanced_ai_service
+                logger.info("Initializing enhanced AI service...")
+                service = _get_enhanced_ai_service()
             if service:
                 logger.info("✓ Enhanced AI service initialized successfully")
             else:
@@ -485,9 +543,12 @@ def _in_reloader_process() -> bool:
 
 if __name__ == '__main__':
 	if not DEBUG_MODE or _in_reloader_process():
-		ensure_returns_tables()
-		ensure_announcements_table()
-		seed_demo_accounts()
+		if not SKIP_SCHEMA_BOOTSTRAP and _database_is_available():
+			ensure_returns_tables()
+			ensure_announcements_table()
+			seed_demo_accounts()
+		else:
+			logger.info("Skipping local schema/seed tasks (database unavailable)")
 	# Use PORT from environment (Railway provides this) or default to 5000
 	port = int(os.getenv('PORT', 5000))
-	app.run(host='0.0.0.0', port=port, debug=DEBUG_MODE, use_reloader=DEBUG_MODE)
+	app.run(host='0.0.0.0', port=port, debug=DEBUG_MODE)

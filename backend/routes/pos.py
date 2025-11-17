@@ -90,17 +90,23 @@ def get_pos_products():
 		ensure_products_reorder_supplier_columns()
 	except Exception:
 		pass
+	# Calculate current_stock from batches (available stock = delivered - sold - disposed, excluding expired)
+	# Note: Disposed expired products don't affect this since expired batches are already excluded
 	query = text('''
 		SELECT 
 			p.id, p.name, p.unit_price, p.cost_price,
 			pc.name as category_name,
-			COALESCE(i.current_stock, 0) as current_stock,
+			COALESCE((
+				SELECT SUM(b.quantity - COALESCE(b.sold_quantity, 0) - COALESCE(b.disposed_quantity, 0))
+				FROM inventory_batches b
+				WHERE b.product_id = p.id
+				AND (b.expiration_date IS NULL OR b.expiration_date > CURRENT_DATE)
+			), 0) as current_stock,
 			p.location,
 			COALESCE(p.reorder_point, 0) as reorder_point,
 			p.preferred_supplier_id
 		FROM products p
 		LEFT JOIN product_categories pc ON p.category_id = pc.id
-		LEFT JOIN inventory i ON p.id = i.product_id
 		WHERE p.is_active = true
 		ORDER BY p.name
 	''')
@@ -202,15 +208,77 @@ def process_sale():
 					'created_at': datetime.now()
 				})
 				
-				# Update inventory
+				# Track sold items from batches (FIFO - oldest batches first)
+				# Ensure batches table exists
+				try:
+					conn.execute(text("""
+						CREATE TABLE IF NOT EXISTS inventory_batches (
+							id bigserial primary key,
+							product_id bigint not null references products(id) on delete cascade,
+							batch_number text not null,
+							quantity int not null check (quantity >= 0),
+							sold_quantity int not null default 0 check (sold_quantity >= 0),
+							expiration_date date,
+							delivery_date date,
+							supplier_id bigint references suppliers(id),
+							cost_price numeric(12, 2),
+							received_at timestamptz default now(),
+							unique(product_id, batch_number)
+						);
+					"""))
+					conn.execute(text("ALTER TABLE inventory_batches ADD COLUMN IF NOT EXISTS sold_quantity int not null default 0;"))
+				except Exception:
+					pass
+				
+				# Get available batches (FIFO - oldest first, not expired, not fully sold)
+				# Only include batches that are not expired
+				batches = conn.execute(text('''
+					SELECT id, quantity, sold_quantity, (quantity - sold_quantity) as available
+					FROM inventory_batches
+					WHERE product_id = :pid
+					AND (expiration_date IS NULL OR expiration_date > CURRENT_DATE)
+					AND (quantity - sold_quantity) > 0
+					ORDER BY received_at ASC
+				'''), {'pid': product_id}).mappings().all()
+				
+				# Check if we have enough available stock (excluding expired)
+				total_available = sum(int(batch['available']) for batch in batches)
+				if total_available < quantity:
+					raise ValueError(f'Insufficient available stock. Available: {total_available}, Requested: {quantity}')
+				
+				# Allocate sold quantity to batches (FIFO)
+				remaining_to_sell = quantity
+				for batch in batches:
+					if remaining_to_sell <= 0:
+						break
+					available = int(batch['available'])
+					if available > 0:
+						sell_from_batch = min(remaining_to_sell, available)
+						conn.execute(text('''
+							UPDATE inventory_batches
+							SET sold_quantity = sold_quantity + :sell_qty
+							WHERE id = :batch_id
+						'''), {'sell_qty': sell_from_batch, 'batch_id': batch['id']})
+						remaining_to_sell -= sell_from_batch
+				
+				# Update inventory (available stock = delivered - sold - disposed, excluding expired)
+				# Calculate available stock from batches (only non-expired batches)
+				# Note: Disposed expired products don't affect this since expired batches are already excluded
+				available_stock = conn.execute(text('''
+					SELECT COALESCE(SUM(quantity - sold_quantity - COALESCE(disposed_quantity, 0)), 0) as available
+					FROM inventory_batches
+					WHERE product_id = :pid
+					AND (expiration_date IS NULL OR expiration_date > CURRENT_DATE)
+				'''), {'pid': product_id}).scalar() or 0
+				
 				inventory_sql = text('''
 					UPDATE inventory 
-					SET current_stock = current_stock - :quantity,
+					SET current_stock = :available_stock,
 						last_updated = :last_updated
 					WHERE product_id = :product_id
 				''')
 				conn.execute(inventory_sql, {
-					'quantity': quantity,
+					'available_stock': available_stock,
 					'last_updated': datetime.now(),
 					'product_id': product_id
 				})
@@ -351,13 +419,16 @@ def pos_transactions():
 			transactions = []
 			for s in sales_rows:
 				items = items_map.get(s['id'], [])
+				total_amount = float(s['total_amount'])
 				transactions.append({
 					'id': s['id'],
 					'user_id': s['user_id'],
 					'sale_number': s['sale_number'],
 					'subtotal': float(s['subtotal']),
 					'discount_amount': float(s['discount_amount'] or 0),
-					'total_amount': float(s['total_amount']),
+					'total_amount': total_amount,
+					'total': total_amount,
+					'amount': total_amount,
 					'payment_method': s['payment_method'],
 					'created_at': s['created_at'].isoformat(),
 					'customer_name': (s['notes'][10:] if s['notes'] and s['notes'].startswith('Customer: ') else None),

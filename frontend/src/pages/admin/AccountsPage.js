@@ -187,6 +187,33 @@ const AccountsPage = () => {
     }
   };
 
+  const handleDeactivatePharmacy = async (pharmacy) => {
+    if (!token) return;
+    const action = pharmacy.is_active ? 'deactivate' : 'activate';
+    if (!window.confirm(`Are you sure you want to ${action} "${pharmacy.name}"?`)) return;
+    
+    try {
+      setError('');
+      if (pharmacy.is_active) {
+        const res = await AdminAPI.deactivatePharmacy(pharmacy.id, token);
+        if (res.success) {
+          await loadData();
+        } else {
+          setError(res.error || 'Failed to deactivate pharmacy');
+        }
+      } else {
+        const res = await AdminAPI.activatePharmacy(pharmacy.id, token);
+        if (res.success) {
+          await loadData();
+        } else {
+          setError(res.error || 'Failed to activate pharmacy');
+        }
+      }
+    } catch (e) {
+      setError(e.message || `Failed to ${action} pharmacy`);
+    }
+  };
+
   const pendingRequests = signupRequests.filter(r => r.status === 'pending');
 
   const getRoleBadge = (role) => {
@@ -353,6 +380,118 @@ const AccountsPage = () => {
           </div>
         </div>
       )}
+
+      {/* Pharmacies Section */}
+      <div className="bg-white dark:bg-slate-950 rounded-2xl shadow-sm border border-gray-200 dark:border-slate-800 overflow-hidden">
+        <div className="px-6 py-4 bg-purple-50 dark:bg-purple-900/20 border-b border-purple-200 dark:border-purple-800">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Building2 className="w-5 h-5 text-purple-600 dark:text-purple-400" />
+              <h2 className="text-lg font-semibold text-purple-900 dark:text-purple-100">
+                Pharmacies ({pharmacies.length})
+              </h2>
+            </div>
+          </div>
+        </div>
+        {pharmacies.length === 0 ? (
+          <div className="p-12 text-center">
+            <Building2 className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+            <p className="text-gray-600 dark:text-slate-400">No pharmacies found</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200 dark:divide-slate-800">
+              <thead className="bg-gray-50 dark:bg-slate-900">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-slate-400 uppercase tracking-wider">
+                    Pharmacy Name
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-slate-400 uppercase tracking-wider">
+                    Owner
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-slate-400 uppercase tracking-wider">
+                    Contact
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-slate-400 uppercase tracking-wider">
+                    Status
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-slate-400 uppercase tracking-wider">
+                    Created
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-slate-400 uppercase tracking-wider">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white dark:bg-slate-950 divide-y divide-gray-200 dark:divide-slate-800">
+                {pharmacies.map((pharmacy) => (
+                  <tr key={pharmacy.id} className="hover:bg-gray-50 dark:hover:bg-slate-900">
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex items-center gap-2">
+                        <Building2 className="w-4 h-4 text-gray-400" />
+                        <span className="text-sm font-medium text-gray-900 dark:text-slate-100">
+                          {pharmacy.name}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="text-sm text-gray-900 dark:text-slate-100">
+                        {pharmacy.owner_name || '—'}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="text-sm text-gray-500 dark:text-slate-400">
+                        {pharmacy.email && (
+                          <div className="flex items-center gap-1 mb-1">
+                            <Mail className="w-3 h-3" />
+                            {pharmacy.email}
+                          </div>
+                        )}
+                        {pharmacy.phone && (
+                          <div className="text-xs">{pharmacy.phone}</div>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                        pharmacy.is_active 
+                          ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' 
+                          : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+                      }`}>
+                        {pharmacy.is_active ? 'Active' : 'Inactive'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-slate-400">
+                      {formatDate(pharmacy.created_at)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      {pharmacy.is_active ? (
+                        <button
+                          onClick={() => handleDeactivatePharmacy(pharmacy)}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 dark:text-red-300 dark:bg-red-900/20 dark:hover:bg-red-900/30 transition-colors"
+                          title="Deactivate pharmacy"
+                        >
+                          <PowerOff className="w-3 h-3" />
+                          Deactivate
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleDeactivatePharmacy(pharmacy)}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 dark:text-green-300 dark:bg-green-900/20 dark:hover:bg-green-900/30 transition-colors"
+                          title="Activate pharmacy"
+                        >
+                          <Power className="w-3 h-3" />
+                          Activate
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       {/* Advanced Filters */}
       <div className="bg-white dark:bg-slate-950 rounded-2xl p-6 shadow-sm border border-gray-200 dark:border-slate-800">

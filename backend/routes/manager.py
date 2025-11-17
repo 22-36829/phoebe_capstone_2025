@@ -5,6 +5,7 @@ from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 import bcrypt
 import os
+import time
 from datetime import datetime, timedelta
 from collections import defaultdict
 from utils.helpers import get_current_user, require_manager_or_admin, date_range_params
@@ -93,10 +94,12 @@ def list_inventory_requests():
 			       ub.email as requested_by_email,
 			       ub.first_name as requested_by_first_name,
 			       ub.last_name as requested_by_last_name,
+			       ub.role as requested_by_role,
 			       r.approved_by,
 			       ua.email as approved_by_email,
 			       ua.first_name as approved_by_first_name,
 			       ua.last_name as approved_by_last_name,
+			       ua.role as approved_by_role,
 			       r.created_at, r.decided_at
 			from inventory_adjustment_requests r
 			join products p on p.id = r.product_id
@@ -122,7 +125,34 @@ def approve_inventory_request(req_id: int):
 			return jsonify({'success': False, 'error': 'Request not found'}), 404
 		if req['status'] != 'pending':
 			return jsonify({'success': False, 'error': 'Request already decided'}), 400
-		# Update inventory ensuring non-negative
+		# For disposal of expired products, don't update current_stock directly
+		# because expired batches are already excluded from stock calculations
+		# The disposal is just a record that the expired products were disposed
+		if req['reason'] == 'Expired - Disposed' and req['quantity_change'] < 0:
+			# Just mark as approved - don't update inventory.current_stock
+			# Expired products are already excluded from batch calculations
+			conn.execute(text('''
+				update inventory_adjustment_requests set status = 'approved', approved_by = :uid, decided_at = now() where id = :id
+			'''), {'uid': user_id, 'id': req_id})
+			# Recalculate current_stock from batches (excluding expired)
+			batch_total = conn.execute(text('''
+				select coalesce(sum(quantity - sold_quantity),0) 
+				from inventory_batches 
+				where product_id = :pid 
+				and (expiration_date is null or expiration_date > current_date)
+			'''), {'pid': req['product_id']}).scalar() or 0
+			
+			conn.execute(text('''
+				insert into inventory (product_id, current_stock, last_updated) 
+				values (:pid, :total, now())
+				on conflict (product_id) do update set 
+					current_stock = :total,
+					last_updated = now()
+			'''), {'pid': req['product_id'], 'total': max(0, batch_total)})
+			
+			return jsonify({'success': True, 'new_stock': max(0, batch_total)})
+		
+		# For other adjustments (positive or negative), update current_stock normally
 		inv = conn.execute(text('select current_stock from inventory where product_id = :pid'), {'pid': req['product_id']}).mappings().first()
 		current_stock = int(inv['current_stock']) if inv else 0
 		new_stock = current_stock + int(req['quantity_change'])
@@ -219,7 +249,7 @@ def manager_update_product(product_id: int):
 	user_id = get_jwt_identity()
 	with engine.begin() as conn:
 		me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-		if not me or me['role'] not in ('manager','admin'):
+		if not me or me['role'] not in ('staff','manager','admin'):
 			return jsonify({'success': False, 'error': 'Forbidden'}), 403
 		fields = {}
 		if 'name' in data:
@@ -261,7 +291,7 @@ def manager_deactivate_product(product_id: int):
 	user_id = get_jwt_identity()
 	with engine.begin() as conn:
 		me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-		if not me or me['role'] not in ('manager','admin'):
+		if not me or me['role'] not in ('staff','manager','admin'):
 			return jsonify({'success': False, 'error': 'Forbidden'}), 403
 		row = conn.execute(text('''
 			update products set is_active = false, updated_at = now()
@@ -279,21 +309,27 @@ def manager_list_products():
 	user_id = get_jwt_identity()
 	with engine.connect() as conn:
 		me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-		if not me or me['role'] not in ('manager','admin'):
+		if not me or me['role'] not in ('staff','manager','admin'):
 			return jsonify({'success': False, 'error': 'Forbidden'}), 403
 		where_status = ''
 		if status == 'active':
 			where_status = 'and p.is_active = true'
 		elif status == 'inactive':
 			where_status = 'and p.is_active = false'
+		# Calculate current_stock from batches (available stock = delivered - sold - disposed, excluding expired)
+		# Note: Disposed expired products don't affect this calculation since expired batches are already excluded
 		query = text(f'''
 			select p.id, p.name, p.unit_price, p.cost_price, p.is_active,
 			       pc.name as category_name,
-			       coalesce(i.current_stock,0) as current_stock,
+			       coalesce((
+			           select sum(b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0))
+			           from inventory_batches b
+			           where b.product_id = p.id
+			           and (b.expiration_date is null or b.expiration_date > current_date)
+			       ), 0) as current_stock,
 			       p.location
 			from products p
 			left join product_categories pc on pc.id = p.category_id
-			left join inventory i on i.product_id = p.id
 			where p.pharmacy_id = :ph {where_status}
 			order by p.name
 		''')
@@ -306,7 +342,7 @@ def manager_reactivate_product(product_id: int):
 	user_id = get_jwt_identity()
 	with engine.begin() as conn:
 		me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-		if not me or me['role'] not in ('manager','admin'):
+		if not me or me['role'] not in ('staff','manager','admin'):
 			return jsonify({'success': False, 'error': 'Forbidden'}), 403
 		row = conn.execute(text('''
 			update products set is_active = true, updated_at = now()
@@ -323,7 +359,7 @@ def manager_hard_delete_product(product_id: int):
 	user_id = get_jwt_identity()
 	with engine.begin() as conn:
 		me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-		if not me or me['role'] not in ('manager','admin'):
+		if not me or me['role'] not in ('staff','manager','admin'):
 			return jsonify({'success': False, 'error': 'Forbidden'}), 403
 		try:
 			res = conn.execute(text('delete from products where id = :id and pharmacy_id = :ph'), {'id': product_id, 'ph': me['pharmacy_id']})
@@ -461,7 +497,7 @@ def analytics_overview():
 	frm, to = date_range_params()
 	with engine.connect() as conn:
 		me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-		if not me or me['role'] not in ('manager','admin'):
+		if not me or me['role'] not in ('staff','manager','admin'):
 			return jsonify({'success': False, 'error': 'Forbidden'}), 403
 		params = {'ph': me['pharmacy_id'], 'from': frm, 'to': to}
 		# Turnover: approx COGS / avg inventory value (using cost_price * stock)
@@ -520,7 +556,7 @@ def analytics_expiry_alerts():
 	user_id = get_jwt_identity()
 	with engine.connect() as conn:
 		me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-		if not me or me['role'] not in ('manager','admin'):
+		if not me or me['role'] not in ('staff','manager','admin'):
 			return jsonify({'success': False, 'error': 'Forbidden'}), 403
 		rows = conn.execute(text('''
 			select 
@@ -561,7 +597,7 @@ def set_inventory_expiration(product_id: int):
 	user_id = get_jwt_identity()
 	with engine.begin() as conn:
 		me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-		if not me or me['role'] not in ('manager','admin'):
+		if not me or me['role'] not in ('staff','manager','admin'):
 			return jsonify({'success': False, 'error': 'Forbidden'}), 403
 		prod = conn.execute(text('select id, pharmacy_id from products where id = :pid'), {'pid': product_id}).mappings().first()
 		if not prod or int(prod['pharmacy_id']) != int(me['pharmacy_id']):
@@ -581,7 +617,7 @@ def sustainability_inventory_utilization():
 	frm, to = date_range_params()
 	with engine.connect() as conn:
 		me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-		if not me or me['role'] not in ('manager','admin'):
+		if not me or me['role'] not in ('staff','manager','admin'):
 			return jsonify({'success': False, 'error': 'Forbidden'}), 403
 		
 		params = {'ph': me['pharmacy_id'], 'from': frm, 'to': to}
@@ -591,8 +627,18 @@ def sustainability_inventory_utilization():
 			with current_inventory as (
 				select 
 					p.id as product_id,
-					coalesce(sum(case when b.quantity > 0 then b.quantity else 0 end), 0) as current_stock,
-					coalesce(sum(case when b.quantity > 0 then b.quantity * coalesce(b.cost_price, p.cost_price) else 0 end), 0) as inventory_value
+					coalesce(sum(case 
+						when b.quantity > 0 
+						and (b.expiration_date is null or b.expiration_date > current_date)
+						then (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0))
+						else 0 
+					end), 0) as current_stock,
+					coalesce(sum(case 
+						when b.quantity > 0 
+						and (b.expiration_date is null or b.expiration_date > current_date)
+						then (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0)) * coalesce(b.cost_price, p.cost_price)
+						else 0 
+					end), 0) as inventory_value
 				from products p
 				left join inventory_batches b on b.product_id = p.id
 				where p.pharmacy_id = :ph and p.is_active = true
@@ -720,7 +766,7 @@ def sustainability_expiry_risk():
 	user_id = get_jwt_identity()
 	with engine.connect() as conn:
 		me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-		if not me or me['role'] not in ('manager','admin'):
+		if not me or me['role'] not in ('staff','manager','admin'):
 			return jsonify({'success': False, 'error': 'Forbidden'}), 403
 		
 		status_filter = (request.args.get('status') or 'all').lower()
@@ -790,6 +836,7 @@ def sustainability_expiry_risk():
 					p.id,
 					p.name,
 					pc.name as category_name,
+					p.location,
 					sum(case when b.quantity > 0 then b.quantity else 0 end) as total_quantity,
 					sum(case when b.quantity > 0 then b.quantity * coalesce(b.cost_price, p.cost_price) else 0 end) as total_value,
 					sum(case when b.expiration_date <= current_date then b.quantity * coalesce(b.cost_price, p.cost_price) else 0 end) as expired_value,
@@ -822,12 +869,13 @@ def sustainability_expiry_risk():
 			params.pop('search', None)
 		
 		base_query += '''
-				group by p.id, p.name, pc.name
+				group by p.id, p.name, pc.name, p.location
 			)
 			select 
 				id,
 				name,
 				category_name,
+				location,
 				total_quantity,
 				total_value,
 				expired_value,
@@ -894,6 +942,7 @@ def sustainability_expiry_risk():
 				'id': row['id'],
 				'name': row['name'],
 				'category_name': row['category_name'],
+				'location': row.get('location') or None,
 				'current_stock': total_qty,
 				'total_value': round(total_value, 2),
 				'stock_value': round(total_value, 2),
@@ -957,8 +1006,15 @@ def sustainability_waste_reduction():
 	user_id = get_jwt_identity()
 	frm, to = date_range_params()
 	with engine.connect() as conn:
+		# Ensure disposed_products table exists
+		try:
+			_ensure_disposed_products_table(conn)
+		except Exception:
+			conn.rollback()
+			pass
+		
 		me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-		if not me or me['role'] not in ('manager','admin'):
+		if not me or me['role'] not in ('staff','manager','admin'):
 			return jsonify({'success': False, 'error': 'Forbidden'}), 403
 		
 		params = {'ph': me['pharmacy_id'], 'from': frm, 'to': to}
@@ -972,10 +1028,10 @@ def sustainability_waste_reduction():
 				r.created_at,
 				r.decided_at,
 				p.name as product_name,
-				coalesce(p.cost_price, 0) as cost_price,
-				coalesce(p.unit_price, 0) as unit_price,
+				coalesce(p.cost_price, 0)::numeric as cost_price,
+				coalesce(p.unit_price, 0)::numeric as unit_price,
 				pc.name as category_name,
-				abs(r.quantity_change) * coalesce(p.cost_price, 0) as waste_value
+				(abs(r.quantity_change) * coalesce(p.cost_price, 0))::numeric as waste_value
 			from inventory_adjustment_requests r
 			join products p on p.id = r.product_id
 			left join product_categories pc on pc.id = p.category_id
@@ -985,7 +1041,28 @@ def sustainability_waste_reduction():
 			order by coalesce(r.decided_at, r.created_at) desc
 		''')
 		
-		waste_items = [dict(r) for r in conn.execute(waste_query, params).mappings().all()]
+		waste_items_raw = conn.execute(waste_query, params).mappings().all()
+		waste_items = []
+		
+		# Process waste items and ensure waste_value is calculated correctly
+		for row in waste_items_raw:
+			entry = dict(row)
+			qty = int(entry.get('quantity_change') or 0)
+			quantity_wasted = abs(qty)
+			cost_price = float(entry.get('cost_price') or 0.0)
+			
+			# Calculate waste value: quantity_wasted * cost_price
+			waste_value = float(quantity_wasted * cost_price)
+			
+			entry['quantity_change'] = qty
+			entry['quantity_wasted'] = quantity_wasted
+			entry['cost_price'] = cost_price
+			entry['unit_price'] = float(entry.get('unit_price') or 0.0)
+			entry['waste_value'] = waste_value
+			entry['created_at'] = entry['created_at'].isoformat() if entry.get('created_at') else None
+			entry['decided_at'] = entry['decided_at'].isoformat() if entry.get('decided_at') else None
+			
+			waste_items.append(entry)
 		
 		# Calculate previous period for comparison
 		prev_from = frm - (to - frm)
@@ -994,7 +1071,7 @@ def sustainability_waste_reduction():
 		
 		prev_waste_query = text('''
 			select 
-				coalesce(sum(abs(r.quantity_change) * coalesce(p.cost_price, 0)), 0) as total_waste_value,
+				coalesce(sum(abs(r.quantity_change) * coalesce(p.cost_price, 0)), 0)::numeric as total_waste_value,
 				coalesce(sum(abs(r.quantity_change)), 0) as total_waste_units,
 				count(*) as waste_incidents
 			from inventory_adjustment_requests r
@@ -1007,13 +1084,14 @@ def sustainability_waste_reduction():
 		prev_waste = conn.execute(prev_waste_query, prev_params).mappings().first()
 		
 		# Current period waste
-		current_waste_value = float(sum(item['waste_value'] for item in waste_items))
+		current_waste_value = float(sum(item.get('waste_value', 0.0) for item in waste_items))
 		current_waste_incidents = len(waste_items)
+		total_waste_units = sum(item.get('quantity_wasted', 0) for item in waste_items)
 		
 		# Calculate reduction metrics
-		prev_waste_value = float(prev_waste['total_waste_value']) if prev_waste else 0
+		prev_waste_value = float(prev_waste['total_waste_value']) if prev_waste and prev_waste['total_waste_value'] is not None else 0.0
 		prev_waste_incidents = int(prev_waste['waste_incidents']) if prev_waste else 0
-		prev_waste_units = int(prev_waste['total_waste_units']) if prev_waste and 'total_waste_units' in prev_waste else 0
+		prev_waste_units = int(prev_waste['total_waste_units']) if prev_waste and prev_waste.get('total_waste_units') is not None else 0
 		
 		waste_reduction_value = prev_waste_value - current_waste_value
 		if prev_waste_value > 0:
@@ -1023,17 +1101,8 @@ def sustainability_waste_reduction():
 		else:
 			waste_reduction_percentage = -100.0
 
-		total_waste_units = 0
+		# Process waste items to add trans_type and ensure category_name
 		for entry in waste_items:
-			qty = int(entry.get('quantity_change') or 0)
-			entry['quantity_change'] = qty
-			entry['quantity_wasted'] = abs(qty)
-			total_waste_units += entry['quantity_wasted']
-			entry['waste_value'] = float(entry.get('waste_value') or 0.0)
-			entry['cost_price'] = float(entry.get('cost_price') or 0.0)
-			entry['unit_price'] = float(entry.get('unit_price') or 0.0)
-			entry['created_at'] = entry['created_at'].isoformat() if entry.get('created_at') else None
-			entry['decided_at'] = entry['decided_at'].isoformat() if entry.get('decided_at') else None
 			raw_reason = (entry.get('reason') or '').strip()
 			entry['reason'] = raw_reason
 			# Extract trans_type from reason if it contains expired/damaged keywords
@@ -1149,23 +1218,52 @@ def sustainability_waste_reduction():
 		
 		# Get products with high waste potential (slow moving + near expiry)
 		high_waste_risk_query = text('''
-			with batch_stats as (
+			with disposed_stats as (
+				-- Get total disposed quantity per product
+				select 
+					product_id,
+					coalesce(sum(quantity_disposed), 0) as total_disposed_quantity
+				from disposed_products
+				where pharmacy_id = :ph
+				group by product_id
+			),
+			batch_stats as (
 				select 
 					p.id,
 					p.name,
 					pc.name as category_name,
 					coalesce(sum(case when b.quantity > 0 then b.quantity else 0 end), 0) as total_quantity,
-					coalesce(sum(case when b.expiration_date < current_date then b.quantity else 0 end), 0) as expired_quantity,
-					coalesce(sum(case when b.expiration_date >= current_date and b.expiration_date <= current_date + interval '30 days' then b.quantity else 0 end), 0) as expiring_quantity,
-					coalesce(sum(case when b.expiration_date < current_date then b.quantity * coalesce(b.cost_price, p.cost_price) else 0 end), 0) as expired_value,
-					coalesce(sum(case when b.expiration_date >= current_date and b.expiration_date <= current_date + interval '30 days' then b.quantity * coalesce(b.cost_price, p.cost_price) else 0 end), 0) as expiring_value,
+					-- Calculate expired quantity excluding disposed quantities
+					coalesce(sum(case 
+						when b.expiration_date < current_date 
+						then (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0))
+						else 0 
+					end), 0) as expired_quantity,
+					coalesce(sum(case 
+						when b.expiration_date >= current_date and b.expiration_date <= current_date + interval '30 days' 
+						then (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0))
+						else 0 
+					end), 0) as expiring_quantity,
+					-- Calculate expired value excluding disposed quantities
+					coalesce(sum(case 
+						when b.expiration_date < current_date 
+						then (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0)) * coalesce(b.cost_price, p.cost_price)
+						else 0 
+					end), 0) as expired_value,
+					coalesce(sum(case 
+						when b.expiration_date >= current_date and b.expiration_date <= current_date + interval '30 days' 
+						then (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0)) * coalesce(b.cost_price, p.cost_price)
+						else 0 
+					end), 0) as expiring_value,
 					min(b.expiration_date) filter (where b.expiration_date >= current_date) as next_expiration,
-					max(b.expiration_date) filter (where b.expiration_date < current_date) as last_expiration
+					max(b.expiration_date) filter (where b.expiration_date < current_date) as last_expiration,
+					coalesce(ds.total_disposed_quantity, 0) as disposed_quantity
 				from products p
 				left join inventory_batches b on b.product_id = p.id
 				left join product_categories pc on pc.id = p.category_id
+				left join disposed_stats ds on ds.product_id = p.id
 				where p.pharmacy_id = :ph and p.is_active = true
-				group by p.id, p.name, pc.name
+				group by p.id, p.name, pc.name, ds.total_disposed_quantity
 			)
 			select 
 				id,
@@ -1246,8 +1344,15 @@ def sustainability_dashboard():
 	user_id = get_jwt_identity()
 	frm, to = date_range_params()
 	with engine.connect() as conn:
+		# Ensure disposed_products table exists
+		try:
+			_ensure_disposed_products_table(conn)
+		except Exception:
+			conn.rollback()
+			pass
+		
 		me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-		if not me or me['role'] not in ('manager','admin'):
+		if not me or me['role'] not in ('staff','manager','admin'):
 			return jsonify({'success': False, 'error': 'Forbidden'}), 403
 		
 		params = {'ph': me['pharmacy_id'], 'from': frm, 'to': to}
@@ -1266,7 +1371,12 @@ def sustainability_dashboard():
 			),
 			inventory_data as (
 				select 
-					coalesce(sum(case when b.quantity > 0 then b.quantity * coalesce(b.cost_price, p.cost_price, 0) else 0 end), 0) as total_inventory_value,
+					coalesce(sum(case 
+						when b.quantity > 0 
+						and (b.expiration_date is null or b.expiration_date > current_date)
+						then (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0)) * coalesce(b.cost_price, p.cost_price, 0)
+						else 0 
+					end), 0) as total_inventory_value,
 					count(distinct p.id) as total_products,
 					count(distinct case when b.expiration_date is not null then p.id end) as products_with_expiry
 				from products p
@@ -1275,31 +1385,56 @@ def sustainability_dashboard():
 			),
 			expiry_data as (
 				select 
-					count(distinct case when b.expiration_date <= current_date and b.quantity > 0 then p.id end) as expired_count,
-					count(distinct case when b.expiration_date <= (current_date + interval '30 days') 
-						and b.expiration_date > current_date and b.quantity > 0 then p.id end) as expiring_soon_count,
-					coalesce(sum(case when b.expiration_date <= (current_date + interval '30 days') 
-						and b.expiration_date > current_date and b.quantity > 0
-						then b.quantity * coalesce(b.cost_price, p.cost_price, 0) else 0 end), 0) as expiring_value
+					count(distinct case 
+						when b.expiration_date <= current_date 
+						and (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0)) > 0 
+						then p.id 
+					end) as expired_count,
+					count(distinct case 
+						when b.expiration_date <= (current_date + interval '30 days') 
+						and b.expiration_date > current_date 
+						and (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0)) > 0 
+						then p.id 
+					end) as expiring_soon_count,
+					-- Count distinct products that are EITHER expired OR expiring (not double-counting)
+					-- Only count products with available (non-disposed) expired/expiring quantities
+					count(distinct case when (
+						(b.expiration_date <= current_date and (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0)) > 0) or
+						(b.expiration_date <= (current_date + interval '30 days') 
+						 and b.expiration_date > current_date 
+						 and (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0)) > 0)
+					) then p.id end) as at_risk_count,
+					coalesce(sum(case 
+						when b.expiration_date <= current_date 
+						and (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0)) > 0
+						then (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0)) * coalesce(b.cost_price, p.cost_price, 0) 
+						else 0 
+					end), 0) as expired_value,
+					coalesce(sum(case 
+						when b.expiration_date <= (current_date + interval '30 days') 
+						and b.expiration_date > current_date 
+						and (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0)) > 0
+						then (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0)) * coalesce(b.cost_price, p.cost_price, 0) 
+						else 0 
+					end), 0) as expiring_value
 				from products p
 				join inventory_batches b on b.product_id = p.id
 				where p.pharmacy_id = :ph and p.is_active = true and b.expiration_date is not null
 			),
 			waste_data as (
+				-- Count disposed products in the period (for historical tracking)
 				select 
-					coalesce(sum(abs(r.quantity_change) * coalesce(p.cost_price, 0)), 0) as current_waste_value,
-					count(*) as waste_incidents
-				from inventory_adjustment_requests r
-				join products p on p.id = r.product_id
-				where r.pharmacy_id = :ph and r.status = 'approved'
-				and (lower(r.reason) like '%expired%' or lower(r.reason) like '%damaged%' or lower(r.reason) like '%waste%')
-				and coalesce(r.decided_at, r.created_at) between :from and :to
+					count(*) as waste_incidents,
+					coalesce(sum(dp.total_cost), 0) as disposed_waste_value
+				from disposed_products dp
+				where dp.pharmacy_id = :ph
+				and dp.disposed_at between :from and :to
 			)
 			select 
 				sd.cogs, sd.revenue, sd.total_sales,
 				id.total_inventory_value, id.total_products, id.products_with_expiry,
-				ed.expired_count, ed.expiring_soon_count, ed.expiring_value,
-				wd.current_waste_value, wd.waste_incidents
+				ed.expired_count, ed.expiring_soon_count, ed.at_risk_count, ed.expired_value, ed.expiring_value,
+				wd.waste_incidents, wd.disposed_waste_value
 			from sales_data sd, inventory_data id, expiry_data ed, waste_data wd
 		''')
 		
@@ -1307,8 +1442,28 @@ def sustainability_dashboard():
 		
 		# Calculate derived metrics
 		turnover_rate = float(metrics['cogs']) / max(float(metrics['total_inventory_value']), 1) if metrics['total_inventory_value'] > 0 else 0
-		expiry_ratio = float(metrics['expiring_soon_count']) / max(float(metrics['products_with_expiry']), 1) if metrics['products_with_expiry'] > 0 else 0
-		waste_ratio = float(metrics['current_waste_value']) / max(float(metrics['total_inventory_value']), 1) if metrics['total_inventory_value'] > 0 else 0
+		
+		# Expiry Risk Ratio: Percentage of products with expiry dates that are expired or expiring soon
+		# Use at_risk_count to avoid double-counting products that have both expired AND expiring batches
+		# Only counts products with available (non-disposed) expired/expiring quantities
+		at_risk_count = int(metrics.get('at_risk_count', 0))  # Distinct products that are expired OR expiring (excluding disposed)
+		products_with_expiry = int(metrics.get('products_with_expiry', 0))
+		expiry_ratio = at_risk_count / max(products_with_expiry, 1) if products_with_expiry > 0 else 0
+		
+		# Keep separate counts for display (only non-disposed products)
+		expired_count = int(metrics.get('expired_count', 0))  # Only non-disposed expired products
+		expiring_soon_count = int(metrics.get('expiring_soon_count', 0))  # Only non-disposed expiring products
+		
+		# Use expired product value (excluding disposed) for waste ratio calculation
+		# This represents current waste risk, not historical disposed waste
+		expired_value = float(metrics.get('expired_value', 0))  # Value of non-disposed expired products
+		total_inventory_value = float(metrics.get('total_inventory_value', 0))  # Total inventory (excluding expired and disposed)
+		# Waste Ratio: Percentage of total inventory value that is already expired (but not yet disposed)
+		waste_ratio = expired_value / max(total_inventory_value, 1) if total_inventory_value > 0 else 0
+		
+		# Waste Value: Total cost of currently expired products (excluding disposed)
+		# This is what shows in the dashboard - current waste that needs attention
+		waste_value = expired_value
 		
 		# Calculate sustainability score (0-100)
 		sustainability_score = max(0, 100 - (
@@ -1325,18 +1480,21 @@ def sustainability_dashboard():
 				'inventory_utilization': {
 					'turnover_rate': round(turnover_rate, 3),
 					'total_inventory_value': float(metrics['total_inventory_value']),
-					'total_products': int(metrics['total_products'])
+					'total_products': int(metrics['total_products']),
+					'cogs': float(metrics.get('cogs', 0))  # Cost of Goods Sold for the period
 				},
 				'expiry_risk': {
 					'expiry_ratio': round(expiry_ratio, 3),
 					'expired_count': int(metrics['expired_count']),
 					'expiring_soon_count': int(metrics['expiring_soon_count']),
+					'expired_value': float(metrics.get('expired_value', 0)),
 					'expiring_value': float(metrics['expiring_value'])
 				},
 				'waste_reduction': {
-					'waste_value': float(metrics['current_waste_value']),
-					'waste_incidents': int(metrics['waste_incidents']),
-					'waste_ratio': round(waste_ratio, 3)
+					'waste_value': waste_value,  # Total cost of currently expired products (excluding disposed)
+					'waste_incidents': int(metrics.get('waste_incidents', 0)),  # Count of disposed products in period
+					'waste_ratio': round(waste_ratio, 3),
+					'disposed_waste_value': float(metrics.get('disposed_waste_value', 0))  # Historical disposed waste in period
 				},
 				'overall': {
 					'sustainability_score': round(sustainability_score, 1),
@@ -1381,7 +1539,6 @@ def process_return():
                 return jsonify({'success': False, 'error': 'Sale not found'}), 404
             
             # Generate return number
-            import time
             return_number = f"RET-{sale_check[1]}-{int(time.time())}"
             
             # Calculate total refund amount
@@ -1679,10 +1836,11 @@ def _ensure_suppliers_and_po_tables(conn) -> None:
         );
     """))
     
-    # Add expected_delivery_at and notes columns if they don't exist (for existing tables)
+    # Add expected_delivery_at, notes, and updated_by columns if they don't exist (for existing tables)
     try:
         conn.execute(text("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS expected_delivery_at date;"))
         conn.execute(text("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS notes text;"))
+        conn.execute(text("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS updated_by bigint references users(id);"))
     except Exception:
         pass
     conn.execute(text("""
@@ -1717,6 +1875,7 @@ def _ensure_batches_table(conn) -> None:
             product_id bigint not null references products(id) on delete cascade,
             batch_number text not null,
             quantity int not null check (quantity >= 0),
+            sold_quantity int not null default 0 check (sold_quantity >= 0),
             expiration_date date,
             delivery_date date,
             supplier_id bigint references suppliers(id),
@@ -1727,12 +1886,34 @@ def _ensure_batches_table(conn) -> None:
     """))
     
     # Add new columns if they don't exist (for existing tables)
+    # Use separate try blocks to prevent transaction abort
     try:
         conn.execute(text("ALTER TABLE inventory_batches ADD COLUMN IF NOT EXISTS delivery_date date;"))
+    except Exception:
+        conn.rollback()
+    try:
         conn.execute(text("ALTER TABLE inventory_batches ADD COLUMN IF NOT EXISTS supplier_id bigint references suppliers(id);"))
+    except Exception:
+        conn.rollback()
+    try:
         conn.execute(text("ALTER TABLE inventory_batches ADD COLUMN IF NOT EXISTS cost_price numeric(12, 2);"))
     except Exception:
-        pass  # Columns might already exist
+        conn.rollback()
+    try:
+        conn.execute(text("ALTER TABLE inventory_batches ADD COLUMN IF NOT EXISTS sold_quantity int not null default 0;"))
+    except Exception:
+        conn.rollback()
+    # Check if constraint exists before adding (PostgreSQL doesn't support IF NOT EXISTS for constraints)
+    try:
+        result = conn.execute(text("""
+            SELECT 1 FROM pg_constraint 
+            WHERE conname = 'check_sold_quantity' 
+            AND conrelid = 'inventory_batches'::regclass
+        """)).fetchone()
+        if not result:
+            conn.execute(text("ALTER TABLE inventory_batches ADD CONSTRAINT check_sold_quantity CHECK (sold_quantity >= 0);"))
+    except Exception:
+        conn.rollback()
     
     # Add composite index for expiry risk queries (if not exists)
     try:
@@ -1741,6 +1922,42 @@ def _ensure_batches_table(conn) -> None:
             ON inventory_batches(product_id, expiration_date, quantity) 
             WHERE expiration_date IS NOT NULL
         """))
+    except Exception:
+        pass
+    
+    # Add disposed_quantity column to track disposed items from batches
+    try:
+        conn.execute(text("ALTER TABLE inventory_batches ADD COLUMN IF NOT EXISTS disposed_quantity int not null default 0 check (disposed_quantity >= 0);"))
+    except Exception:
+        pass
+
+
+def _ensure_disposed_products_table(conn) -> None:
+    """Create disposed_products table to track disposed inventory"""
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS disposed_products (
+            id bigserial primary key,
+            pharmacy_id bigint not null,
+            product_id bigint not null references products(id) on delete restrict,
+            batch_id bigint references inventory_batches(id) on delete set null,
+            batch_number text,
+            quantity_disposed int not null check (quantity_disposed > 0),
+            cost_price numeric(12, 2),
+            total_cost numeric(12, 2),
+            disposed_by bigint not null references users(id),
+            disposed_at timestamptz default now(),
+            reason text default 'Expired - Disposed',
+            expiration_date date,
+            location text
+        );
+    """))
+    
+    # Create indexes
+    try:
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_disposed_products_pharmacy ON disposed_products(pharmacy_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_disposed_products_product ON disposed_products(product_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_disposed_products_batch ON disposed_products(batch_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_disposed_products_disposed_at ON disposed_products(disposed_at)"))
     except Exception:
         pass
 
@@ -1773,7 +1990,12 @@ def inventory_dashboard():
                 select coalesce(count(*),0)
                 from (
                   select p.id,
-                         coalesce(sum(case when b.quantity > 0 then b.quantity else 0 end), 0) as qty,
+                         coalesce(sum(case 
+                             when b.quantity > 0 
+                             and (b.expiration_date is null or b.expiration_date > current_date)
+                             then (b.quantity - coalesce(b.sold_quantity, 0))
+                             else 0 
+                         end), 0) as qty,
                          coalesce(p.reorder_point, 10) as reorder_point
                   from products p
                   left join inventory_batches b on b.product_id = p.id
@@ -1881,61 +2103,270 @@ def inventory_history():
 def list_batches(product_id):
     """List all batches (deliveries) for a product."""
     user_id = get_jwt_identity()
-    with engine.connect() as conn:
-        _ensure_batches_table(conn)
-        _ensure_suppliers_and_po_tables(conn)
-        
-        me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-        if not me or me['role'] not in ('manager','admin'):
-            return jsonify({'success': False, 'error': 'Forbidden'}), 403
-        
-        # Verify product belongs to pharmacy
-        product = conn.execute(text('select id, pharmacy_id from products where id = :id'), {'id': product_id}).mappings().first()
-        if not product or product['pharmacy_id'] != me['pharmacy_id']:
-            return jsonify({'success': False, 'error': 'Product not found'}), 404
-        
-        batches = conn.execute(text('''
-            select b.id, b.batch_number, b.quantity, b.expiration_date, b.delivery_date, 
-                   b.supplier_id, b.cost_price, b.received_at,
-                   s.name as supplier_name
-            from inventory_batches b
-            left join suppliers s on s.id = b.supplier_id
-            where b.product_id = :pid
-            order by b.received_at desc
-        '''), {'pid': product_id}).mappings().all()
-        
-        return jsonify({'success': True, 'batches': [dict(b) for b in batches]})
+    try:
+        with engine.connect() as conn:
+            # Ensure tables exist (with proper error handling)
+            try:
+                _ensure_batches_table(conn)
+            except Exception as e:
+                conn.rollback()
+                # Try again with a fresh connection
+                pass
+            try:
+                _ensure_suppliers_and_po_tables(conn)
+            except Exception as e:
+                conn.rollback()
+                pass
+            
+            me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
+            if not me or me['role'] not in ('manager','admin'):
+                return jsonify({'success': False, 'error': 'Forbidden'}), 403
+            
+            # Verify product belongs to pharmacy
+            product = conn.execute(text('select id, pharmacy_id from products where id = :id'), {'id': product_id}).mappings().first()
+            if not product or product['pharmacy_id'] != me['pharmacy_id']:
+                return jsonify({'success': False, 'error': 'Product not found'}), 404
+            
+            batches = conn.execute(text('''
+                select b.id, b.batch_number, b.quantity, 
+                       coalesce(b.sold_quantity, 0) as sold_quantity,
+                       coalesce(b.disposed_quantity, 0) as disposed_quantity,
+                       CASE 
+                           WHEN b.expiration_date IS NOT NULL AND b.expiration_date <= CURRENT_DATE THEN 0
+                           ELSE (b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0))
+                       END as available_quantity,
+                       (b.quantity - coalesce(b.disposed_quantity, 0)) as delivered_quantity,
+                       b.expiration_date, b.delivery_date, 
+                       b.supplier_id, b.cost_price, b.received_at,
+                       s.name as supplier_name
+                from inventory_batches b
+                left join suppliers s on s.id = b.supplier_id
+                where b.product_id = :pid
+                order by b.received_at desc
+            '''), {'pid': product_id}).mappings().all()
+            
+            conn.commit()
+            return jsonify({'success': True, 'batches': [dict(b) for b in batches]})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # Staff-visible: read-only batches listing (same pharmacy)
-@manager_bp.get('/api/staff/batches/<int:product_id>')
+# NOTE: This route has been moved to routes/staff.py under staff_public_bp
+# It's registered at /api/staff/batches/<product_id> (staff_public_bp prefix: /api/staff)
+# Keeping this comment for reference, but the actual route is in staff.py
+
+
+@manager_bp.post('/dispose-expired/<int:product_id>')
 @jwt_required()
-def staff_list_batches(product_id: int):
-    """List deliveries for a product for any authenticated user in the same pharmacy."""
+def dispose_expired_product(product_id):
+    """Dispose expired products - remove from batches and record in disposed_products table"""
     user_id = get_jwt_identity()
-    with engine.connect() as conn:
+    data = request.get_json() or {}
+    quantity_to_dispose = int(data.get('quantity', 0))
+    
+    if quantity_to_dispose <= 0:
+        return jsonify({'success': False, 'error': 'Quantity must be greater than 0'}), 400
+    
+    with engine.begin() as conn:
         _ensure_batches_table(conn)
-        _ensure_suppliers_and_po_tables(conn)
-
-        me = conn.execute(text('select id, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-        if not me:
-            return jsonify({'success': False, 'error': 'User not found'}), 404
-
-        product = conn.execute(text('select id, pharmacy_id from products where id = :id'), {'id': product_id}).mappings().first()
-        if not product or int(product['pharmacy_id']) != int(me['pharmacy_id']):
+        _ensure_disposed_products_table(conn)
+        
+        me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
+        if not me or me['role'] not in ('manager','admin','staff'):
+            return jsonify({'success': False, 'error': 'Forbidden'}), 403
+        
+        # Get product info
+        product = conn.execute(text('''
+            select id, pharmacy_id, name, cost_price, location
+            from products 
+            where id = :pid
+        '''), {'pid': product_id}).mappings().first()
+        
+        if not product or product['pharmacy_id'] != me['pharmacy_id']:
             return jsonify({'success': False, 'error': 'Product not found'}), 404
-
-        batches = conn.execute(text('''
-            select b.id, b.batch_number, b.quantity, b.expiration_date, b.delivery_date,
-                   b.supplier_id, b.cost_price, b.received_at,
-                   s.name as supplier_name
-            from inventory_batches b
-            left join suppliers s on s.id = b.supplier_id
-            where b.product_id = :pid
-            order by b.received_at desc
+        
+        # Get expired batches (FIFO - oldest expired first)
+        expired_batches = conn.execute(text('''
+            select id, batch_number, quantity, sold_quantity, disposed_quantity,
+                   (quantity - sold_quantity - coalesce(disposed_quantity, 0)) as available,
+                   expiration_date, cost_price
+            from inventory_batches
+            where product_id = :pid
+            and expiration_date is not null
+            and expiration_date <= current_date
+            and (quantity - sold_quantity - coalesce(disposed_quantity, 0)) > 0
+            order by received_at asc
         '''), {'pid': product_id}).mappings().all()
+        
+        if not expired_batches:
+            return jsonify({'success': False, 'error': 'No expired products available to dispose'}), 400
+        
+        total_available = sum(int(b['available']) for b in expired_batches)
+        if total_available < quantity_to_dispose:
+            return jsonify({'success': False, 'error': f'Only {total_available} expired units available to dispose'}), 400
+        
+        # Distribute disposal across batches (FIFO)
+        remaining_to_dispose = quantity_to_dispose
+        disposed_records = []
+        
+        for batch in expired_batches:
+            if remaining_to_dispose <= 0:
+                break
+            
+            available = int(batch['available'])
+            if available > 0:
+                dispose_from_batch = min(remaining_to_dispose, available)
+                batch_disposed_qty = int(batch['disposed_quantity'] or 0)
+                new_disposed_qty = batch_disposed_qty + dispose_from_batch
+                
+                # Update batch disposed_quantity
+                conn.execute(text('''
+                    update inventory_batches
+                    set disposed_quantity = :disposed_qty
+                    where id = :batch_id
+                '''), {'disposed_qty': new_disposed_qty, 'batch_id': batch['id']})
+                
+                # Record in disposed_products table
+                batch_cost = float(batch['cost_price'] or product['cost_price'] or 0)
+                total_cost = batch_cost * dispose_from_batch
+                
+                disposed_id = conn.execute(text('''
+                    insert into disposed_products 
+                    (pharmacy_id, product_id, batch_id, batch_number, quantity_disposed, 
+                     cost_price, total_cost, disposed_by, expiration_date, location, reason)
+                    values (:ph, :pid, :bid, :bn, :qty, :cp, :tc, :uid, :exp, :loc, 'Expired - Disposed')
+                    returning id
+                '''), {
+                    'ph': me['pharmacy_id'],
+                    'pid': product_id,
+                    'bid': batch['id'],
+                    'bn': batch['batch_number'],
+                    'qty': dispose_from_batch,
+                    'cp': batch_cost,
+                    'tc': total_cost,
+                    'uid': user_id,
+                    'exp': batch['expiration_date'],
+                    'loc': product['location']
+                }).scalar()
+                
+                disposed_records.append({
+                    'id': disposed_id,
+                    'batch_id': batch['id'],
+                    'batch_number': batch['batch_number'],
+                    'quantity': dispose_from_batch
+                })
+                
+                remaining_to_dispose -= dispose_from_batch
+        
+        # Recalculate inventory stock (only non-expired batches)
+        batch_total = conn.execute(text('''
+            select coalesce(sum(quantity - sold_quantity - coalesce(disposed_quantity, 0)),0) 
+            from inventory_batches 
+            where product_id = :pid 
+            and (expiration_date is null or expiration_date > current_date)
+        '''), {'pid': product_id}).scalar() or 0
+        
+        conn.execute(text('''
+            insert into inventory (product_id, current_stock, last_updated) 
+            values (:pid, :total, now())
+            on conflict (product_id) do update set 
+                current_stock = :total,
+                last_updated = now()
+        '''), {'pid': product_id, 'total': max(0, batch_total)})
+        
+        return jsonify({
+            'success': True,
+            'message': f'Disposed {quantity_to_dispose} units of expired products',
+            'disposed_records': disposed_records,
+            'new_stock': max(0, batch_total)
+        })
 
-        return jsonify({'success': True, 'batches': [dict(b) for b in batches]})
+
+@manager_bp.get('/disposed-products')
+@jwt_required()
+def list_disposed_products():
+    """List all disposed products"""
+    user_id = get_jwt_identity()
+    page = int(request.args.get('page', 1))
+    page_size = int(request.args.get('page_size', 50))
+    search = request.args.get('search', '').strip()
+    date_from = request.args.get('date_from')
+    date_to = request.args.get('date_to')
+    
+    with engine.connect() as conn:
+        _ensure_disposed_products_table(conn)
+        
+        me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
+        if not me or me['role'] not in ('staff','manager','admin'):
+            return jsonify({'success': False, 'error': 'Forbidden'}), 403
+        
+        conditions = ['dp.pharmacy_id = :ph']
+        params = {'ph': me['pharmacy_id'], 'offset': (page - 1) * page_size, 'limit': page_size}
+        
+        if search:
+            conditions.append('(p.name ilike :search or b.batch_number ilike :search)')
+            params['search'] = f'%{search}%'
+        
+        if date_from:
+            # Include the entire day from 00:00:00
+            conditions.append('dp.disposed_at::date >= :date_from::date')
+            params['date_from'] = date_from
+        
+        if date_to:
+            # Include the entire day up to 23:59:59
+            conditions.append('dp.disposed_at::date <= :date_to::date')
+            params['date_to'] = date_to
+        
+        where_clause = ' and '.join(conditions)
+        
+        # Get total count and summary statistics (for all filtered items, not just current page)
+        summary_params = {k: v for k, v in params.items() if k != 'offset' and k != 'limit'}
+        summary = conn.execute(text(f'''
+            select 
+                count(*) as total,
+                coalesce(sum(dp.quantity_disposed), 0) as total_quantity,
+                coalesce(sum(dp.total_cost), 0) as total_cost
+            from disposed_products dp
+            join products p on p.id = dp.product_id
+            left join inventory_batches b on b.id = dp.batch_id
+            where {where_clause}
+        '''), summary_params).mappings().first()
+        
+        total = int(summary.get('total', 0))
+        total_quantity = int(summary.get('total_quantity', 0))
+        total_cost = float(summary.get('total_cost', 0))
+        
+        # Get disposed products (paginated)
+        query_params = {k: v for k, v in params.items()}
+        disposed = conn.execute(text(f'''
+            select 
+                dp.id, dp.product_id, dp.batch_id, dp.batch_number,
+                dp.quantity_disposed, dp.cost_price, dp.total_cost,
+                dp.disposed_at, dp.expiration_date, dp.location,
+                p.name as product_name, p.location as product_location,
+                pc.name as category_name,
+                u.first_name || ' ' || u.last_name as disposed_by_name,
+                u.role as disposed_by_role
+            from disposed_products dp
+            join products p on p.id = dp.product_id
+            left join product_categories pc on pc.id = p.category_id
+            left join users u on u.id = dp.disposed_by
+            left join inventory_batches b on b.id = dp.batch_id
+            where {where_clause}
+            order by dp.disposed_at desc
+            limit :limit offset :offset
+        '''), query_params).mappings().all()
+        
+        return jsonify({
+            'success': True,
+            'disposed': [dict(d) for d in disposed],
+            'total': total,
+            'total_quantity': total_quantity,
+            'total_cost': total_cost,
+            'page': page,
+            'page_size': page_size
+        })
 
 
 @manager_bp.post('/batches/<int:product_id>')
@@ -1985,9 +2416,10 @@ def create_batch(product_id):
             'cp': cost_price
         })
         
-        # Update inventory total (excluding expired products)
+        # Update inventory total (available stock = delivered - sold - disposed, excluding expired products)
+        # Note: Disposed expired products don't affect this since expired batches are already excluded
         total = conn.execute(text('''
-            select coalesce(sum(quantity),0) 
+            select coalesce(sum(quantity - sold_quantity - coalesce(disposed_quantity, 0)),0) 
             from inventory_batches 
             where product_id = :pid 
             and (expiration_date is null or expiration_date > current_date)
@@ -2001,6 +2433,10 @@ def create_batch(product_id):
         if avg_cost is not None:
             conn.execute(text('update products set cost_price = :avg where id = :pid'), {'avg': avg_cost, 'pid': product_id})
 
+        # Get old stock before update
+        old_inv = conn.execute(text('select current_stock from inventory where product_id = :pid'), {'pid': product_id}).mappings().first()
+        old_stock = int(old_inv['current_stock']) if old_inv else 0
+        
         conn.execute(text('''
             insert into inventory (product_id, current_stock) 
             values (:pid, :total)
@@ -2008,6 +2444,39 @@ def create_batch(product_id):
                 current_stock = :total,
                 last_updated = now()
         '''), {'pid': product_id, 'total': total})
+        
+        # If stock increased, mark approved requests as delivered only if quantity matches
+        if total > old_stock:
+            stock_increase = total - old_stock
+            # Find approved requests for this product that haven't been delivered yet
+            approved_requests = conn.execute(text('''
+                select id, quantity_change, status
+                from inventory_adjustment_requests
+                where product_id = :pid 
+                and status = 'approved'
+                and quantity_change > 0
+                order by created_at asc
+            '''), {'pid': product_id}).mappings().all()
+            
+            # Mark requests as delivered only if stock increase matches the requested quantity
+            remaining_increase = stock_increase
+            for req in approved_requests:
+                if remaining_increase <= 0:
+                    break
+                if req['status'] == 'approved':
+                    requested_qty = int(req['quantity_change'])
+                    # Only mark as delivered if the stock increase matches or exceeds the requested quantity
+                    if remaining_increase >= requested_qty:
+                        # Mark this request as delivered
+                        conn.execute(text('''
+                            update inventory_adjustment_requests
+                            set status = 'delivered', decided_at = now()
+                            where id = :req_id and status = 'approved'
+                        '''), {'req_id': req['id']})
+                        remaining_increase -= requested_qty
+                    else:
+                        # Not enough stock increase to fulfill this request, stop checking
+                        break
         
         conn.commit()
         return jsonify({'success': True, 'message': 'Batch created'})
@@ -2078,9 +2547,10 @@ def update_batch(batch_id):
                 where id = :id
             '''), params)
         
-        # Update inventory total (excluding expired products)
+        # Update inventory total (available stock = delivered - sold, excluding expired products)
+        # Note: Disposed expired products don't affect this since expired batches are already excluded
         total = conn.execute(text('''
-            select coalesce(sum(quantity),0) 
+            select coalesce(sum(quantity - sold_quantity),0) 
             from inventory_batches 
             where product_id = :pid 
             and (expiration_date is null or expiration_date > current_date)
@@ -2094,15 +2564,10 @@ def update_batch(batch_id):
         if avg_cost is not None:
             conn.execute(text('update products set cost_price = :avg where id = :pid'), {'avg': avg_cost, 'pid': owner['product_id']})
 
-        # Persist latest average cost into products.cost_price
-        avg_cost = conn.execute(text('''
-            select avg(cost_price)::numeric(12,2)
-            from inventory_batches
-            where product_id = :pid and cost_price is not null
-        '''), {'pid': owner['product_id']}).scalar()
-        if avg_cost is not None:
-            conn.execute(text('update products set cost_price = :avg where id = :pid'), {'avg': avg_cost, 'pid': owner['product_id']})
-
+        # Get old stock before update
+        old_inv = conn.execute(text('select current_stock from inventory where product_id = :pid'), {'pid': owner['product_id']}).mappings().first()
+        old_stock = int(old_inv['current_stock']) if old_inv else 0
+        
         conn.execute(text('''
             insert into inventory (product_id, current_stock) 
             values (:pid, :total)
@@ -2110,6 +2575,39 @@ def update_batch(batch_id):
                 current_stock = :total,
                 last_updated = now()
         '''), {'pid': owner['product_id'], 'total': total})
+        
+        # If stock increased, mark approved requests as delivered only if quantity matches
+        if total > old_stock:
+            stock_increase = total - old_stock
+            # Find approved requests for this product that haven't been delivered yet
+            approved_requests = conn.execute(text('''
+                select id, quantity_change, status
+                from inventory_adjustment_requests
+                where product_id = :pid 
+                and status = 'approved'
+                and quantity_change > 0
+                order by created_at asc
+            '''), {'pid': owner['product_id']}).mappings().all()
+            
+            # Mark requests as delivered only if stock increase matches the requested quantity
+            remaining_increase = stock_increase
+            for req in approved_requests:
+                if remaining_increase <= 0:
+                    break
+                if req['status'] == 'approved':
+                    requested_qty = int(req['quantity_change'])
+                    # Only mark as delivered if the stock increase matches or exceeds the requested quantity
+                    if remaining_increase >= requested_qty:
+                        # Mark this request as delivered
+                        conn.execute(text('''
+                            update inventory_adjustment_requests
+                            set status = 'delivered', decided_at = now()
+                            where id = :req_id and status = 'approved'
+                        '''), {'req_id': req['id']})
+                        remaining_increase -= requested_qty
+                    else:
+                        # Not enough stock increase to fulfill this request, stop checking
+                        break
         
         conn.commit()
         return jsonify({'success': True, 'message': 'Batch updated'})
@@ -2167,7 +2665,7 @@ def list_suppliers():
     user_id = get_jwt_identity()
     with engine.begin() as conn:
         me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-        if not me or me['role'] not in ('manager','admin'):
+        if not me or me['role'] not in ('staff','manager','admin'):
             return jsonify({'success': False, 'error': 'Forbidden'}), 403
         _ensure_suppliers_and_po_tables(conn)
         rows = conn.execute(text('''
@@ -2180,16 +2678,73 @@ def list_suppliers():
 @manager_bp.post('/suppliers')
 @jwt_required()
 def create_supplier():
+    import re
     data = request.get_json(force=True) or {}
     name = (data.get('name') or '').strip()
+    
+    # Name validation
     if not name:
-        return jsonify({'success': False, 'error': 'name is required'}), 400
+        return jsonify({'success': False, 'error': 'Supplier name is required'}), 400
+    if len(name) < 2:
+        return jsonify({'success': False, 'error': 'Supplier name must be at least 2 characters'}), 400
+    if len(name) > 100:
+        return jsonify({'success': False, 'error': 'Supplier name must not exceed 100 characters'}), 400
+    
+    # Email validation
+    email = (data.get('email') or '').strip() or None
+    if email:
+        if len(email) > 255:
+            return jsonify({'success': False, 'error': 'Email must not exceed 255 characters'}), 400
+        email_regex = r'^[^\s@]+@[^\s@]+\.[^\s@]+$'
+        if not re.match(email_regex, email):
+            return jsonify({'success': False, 'error': 'Please enter a valid email address'}), 400
+    
+    # Phone validation
+    phone = (data.get('phone') or '').strip() or None
+    if phone:
+        phone_clean = re.sub(r'[\s\-\(\)]', '', phone)
+        if not re.match(r'^[\d\s\-\+\(\)]+$', phone):
+            return jsonify({'success': False, 'error': 'Please enter a valid phone number'}), 400
+        if len(phone_clean) < 7 or len(phone_clean) > 15:
+            return jsonify({'success': False, 'error': 'Phone number must be between 7 and 15 digits'}), 400
+    
+    # Contact name validation
+    contact_name = (data.get('contact_name') or '').strip() or None
+    if contact_name and len(contact_name) > 100:
+        return jsonify({'success': False, 'error': 'Contact name must not exceed 100 characters'}), 400
+    
+    # Address validation
+    address = (data.get('address') or '').strip() or None
+    if address and len(address) > 500:
+        return jsonify({'success': False, 'error': 'Address must not exceed 500 characters'}), 400
+    
+    # Lead time validation
+    lead_time_days = data.get('lead_time_days')
+    if lead_time_days is None:
+        lead_time_days = 7
+    try:
+        lead_time_days = int(lead_time_days)
+        if lead_time_days < 1:
+            return jsonify({'success': False, 'error': 'Lead time must be at least 1 day'}), 400
+        if lead_time_days > 365:
+            return jsonify({'success': False, 'error': 'Lead time must not exceed 365 days'}), 400
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': 'Lead time must be a whole number'}), 400
+    
     user_id = get_jwt_identity()
     with engine.begin() as conn:
         me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
         if not me or me['role'] not in ('manager','admin'):
             return jsonify({'success': False, 'error': 'Forbidden'}), 403
         _ensure_suppliers_and_po_tables(conn)
+        
+        # Check for duplicate supplier name in the same pharmacy
+        existing = conn.execute(text('''
+            select id from suppliers where pharmacy_id = :ph and lower(name) = lower(:n)
+        '''), {'ph': me['pharmacy_id'], 'n': name}).mappings().first()
+        if existing:
+            return jsonify({'success': False, 'error': 'A supplier with this name already exists'}), 400
+        
         row = conn.execute(text('''
             insert into suppliers (pharmacy_id, name, contact_name, email, phone, address, lead_time_days, is_active)
             values (:ph, :n, :cn, :e, :p, :a, :lt, true)
@@ -2197,11 +2752,11 @@ def create_supplier():
         '''), {
             'ph': me['pharmacy_id'],
             'n': name,
-            'cn': (data.get('contact_name') or '').strip() or None,
-            'e': (data.get('email') or '').strip() or None,
-            'p': (data.get('phone') or '').strip() or None,
-            'a': (data.get('address') or '').strip() or None,
-            'lt': int(data.get('lead_time_days') or 7),
+            'cn': contact_name,
+            'e': email,
+            'p': phone,
+            'a': address,
+            'lt': lead_time_days,
         }).mappings().first()
         return jsonify({'success': True, 'supplier': dict(row)})
 
@@ -2209,6 +2764,7 @@ def create_supplier():
 @manager_bp.patch('/suppliers/<int:supplier_id>')
 @jwt_required()
 def update_supplier(supplier_id: int):
+    import re
     data = request.get_json(force=True) or {}
     user_id = get_jwt_identity()
     with engine.begin() as conn:
@@ -2216,6 +2772,80 @@ def update_supplier(supplier_id: int):
         if not me or me['role'] not in ('manager','admin'):
             return jsonify({'success': False, 'error': 'Forbidden'}), 403
         _ensure_suppliers_and_po_tables(conn)
+        
+        # Check if supplier exists and belongs to the pharmacy
+        supplier = conn.execute(text('''
+            select id, name from suppliers where id = :id and pharmacy_id = :ph
+        '''), {'id': supplier_id, 'ph': me['pharmacy_id']}).mappings().first()
+        if not supplier:
+            return jsonify({'success': False, 'error': 'Supplier not found'}), 404
+        
+        # Name validation (if provided)
+        name = data.get('name')
+        if name is not None:
+            name = name.strip()
+            if not name:
+                return jsonify({'success': False, 'error': 'Supplier name is required'}), 400
+            if len(name) < 2:
+                return jsonify({'success': False, 'error': 'Supplier name must be at least 2 characters'}), 400
+            if len(name) > 100:
+                return jsonify({'success': False, 'error': 'Supplier name must not exceed 100 characters'}), 400
+            
+            # Check for duplicate supplier name (excluding current supplier)
+            existing = conn.execute(text('''
+                select id from suppliers where pharmacy_id = :ph and lower(name) = lower(:n) and id != :id
+            '''), {'ph': me['pharmacy_id'], 'n': name, 'id': supplier_id}).mappings().first()
+            if existing:
+                return jsonify({'success': False, 'error': 'A supplier with this name already exists'}), 400
+        
+        # Email validation (if provided)
+        email = data.get('email')
+        if email is not None:
+            email = email.strip() if email else None
+            if email:
+                if len(email) > 255:
+                    return jsonify({'success': False, 'error': 'Email must not exceed 255 characters'}), 400
+                email_regex = r'^[^\s@]+@[^\s@]+\.[^\s@]+$'
+                if not re.match(email_regex, email):
+                    return jsonify({'success': False, 'error': 'Please enter a valid email address'}), 400
+        
+        # Phone validation (if provided)
+        phone = data.get('phone')
+        if phone is not None:
+            phone = phone.strip() if phone else None
+            if phone:
+                phone_clean = re.sub(r'[\s\-\(\)]', '', phone)
+                if not re.match(r'^[\d\s\-\+\(\)]+$', phone):
+                    return jsonify({'success': False, 'error': 'Please enter a valid phone number'}), 400
+                if len(phone_clean) < 7 or len(phone_clean) > 15:
+                    return jsonify({'success': False, 'error': 'Phone number must be between 7 and 15 digits'}), 400
+        
+        # Contact name validation (if provided)
+        contact_name = data.get('contact_name')
+        if contact_name is not None:
+            contact_name = contact_name.strip() if contact_name else None
+            if contact_name and len(contact_name) > 100:
+                return jsonify({'success': False, 'error': 'Contact name must not exceed 100 characters'}), 400
+        
+        # Address validation (if provided)
+        address = data.get('address')
+        if address is not None:
+            address = address.strip() if address else None
+            if address and len(address) > 500:
+                return jsonify({'success': False, 'error': 'Address must not exceed 500 characters'}), 400
+        
+        # Lead time validation (if provided)
+        lead_time_days = data.get('lead_time_days')
+        if lead_time_days is not None:
+            try:
+                lead_time_days = int(lead_time_days)
+                if lead_time_days < 1:
+                    return jsonify({'success': False, 'error': 'Lead time must be at least 1 day'}), 400
+                if lead_time_days > 365:
+                    return jsonify({'success': False, 'error': 'Lead time must not exceed 365 days'}), 400
+            except (ValueError, TypeError):
+                return jsonify({'success': False, 'error': 'Lead time must be a whole number'}), 400
+        
         conn.execute(text('''
             update suppliers set 
               name = coalesce(:n, name),
@@ -2230,12 +2860,12 @@ def update_supplier(supplier_id: int):
         '''), {
             'id': supplier_id,
             'ph': me['pharmacy_id'],
-            'n': data.get('name'),
-            'cn': data.get('contact_name'),
-            'e': data.get('email'),
-            'p': data.get('phone'),
-            'a': data.get('address'),
-            'lt': int(data['lead_time_days']) if data.get('lead_time_days') is not None else None,
+            'n': name if name is not None else None,
+            'cn': contact_name if contact_name is not None else None,
+            'e': email if email is not None else None,
+            'p': phone if phone is not None else None,
+            'a': address if address is not None else None,
+            'lt': lead_time_days if lead_time_days is not None else None,
             'ia': bool(data['is_active']) if data.get('is_active') is not None else None,
         })
         return jsonify({'success': True})
@@ -2347,20 +2977,113 @@ def list_purchase_orders():
     user_id = get_jwt_identity()
     with engine.connect() as conn:
         me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-        if not me or me['role'] not in ('manager','admin'):
+        if not me or me['role'] not in ('staff','manager','admin'):
             return jsonify({'success': False, 'error': 'Forbidden'}), 403
         rows = conn.execute(text('''
-            select po.id, po.po_number, po.status, po.expected_delivery_at, po.created_at, s.name as supplier_name,
-                   coalesce(sum(i.quantity),0) as total_items
+            select po.id, po.po_number, po.status, po.expected_delivery_at, po.created_at, po.updated_at,
+                   s.name as supplier_name,
+                   coalesce(sum(i.quantity),0) as total_items,
+                   creator.id as creator_id,
+                   creator.username as creator_username,
+                   creator.first_name as creator_first_name,
+                   creator.last_name as creator_last_name,
+                   creator.role as creator_role,
+                   editor.id as editor_id,
+                   editor.username as editor_username,
+                   editor.first_name as editor_first_name,
+                   editor.last_name as editor_last_name,
+                   editor.role as editor_role
             from purchase_orders po
             join suppliers s on s.id = po.supplier_id
             left join purchase_order_items i on i.po_id = po.id
+            left join users creator on creator.id = po.created_by
+            left join users editor on editor.id = po.updated_by
             where po.pharmacy_id = :ph
-            group by po.id, s.name
+            group by po.id, s.name, creator.id, creator.username, creator.first_name, creator.last_name, creator.role,
+                     editor.id, editor.username, editor.first_name, editor.last_name, editor.role
             order by po.created_at desc
             limit 200
         '''), {'ph': me['pharmacy_id']}).mappings().all()
-        return jsonify({'success': True, 'purchase_orders': [dict(r) for r in rows]})
+        
+        # Get items for each purchase order
+        po_ids = [r['id'] for r in rows]
+        items_map = {}
+        if po_ids:
+            items_rows = conn.execute(text('''
+                select poi.po_id, poi.product_id, poi.quantity, poi.unit_cost
+                from purchase_order_items poi
+                where poi.po_id = ANY(:po_ids)
+            '''), {'po_ids': po_ids}).mappings().all()
+            for it in items_rows:
+                po_id = it['po_id']
+                if po_id not in items_map:
+                    items_map[po_id] = []
+                items_map[po_id].append({
+                    'product_id': it['product_id'],
+                    'quantity': it['quantity'],
+                    'unit_cost': float(it['unit_cost'])
+                })
+        
+        purchase_orders = []
+        for r in rows:
+            po_dict = dict(r)
+            po_dict['items'] = items_map.get(r['id'], [])
+            # Build creator display name with role
+            creator_role = r.get('creator_role', 'staff')
+            creator_role_display = 'Manager' if creator_role == 'manager' else 'Staff'
+            creator_full_name = ((r.get('creator_first_name') or '') + ' ' + (r.get('creator_last_name') or '')).strip()
+            creator_name = creator_full_name if creator_full_name else (r.get('creator_username') or 'Unknown')
+            creator_display = f"{creator_role_display} {creator_name}"
+            po_dict['created_by_name'] = creator_display
+            po_dict['created_by_role'] = creator_role
+            
+            # Build editor display name with role
+            updated_at = r.get('updated_at')
+            created_at = r.get('created_at')
+            editor_id = r.get('editor_id')
+            
+            if editor_id:
+                # Has an editor - build editor name with role
+                editor_role = r.get('editor_role', 'staff')
+                editor_role_display = 'Manager' if editor_role == 'manager' else 'Staff'
+                editor_full_name = ((r.get('editor_first_name') or '') + ' ' + (r.get('editor_last_name') or '')).strip()
+                editor_name = editor_full_name if editor_full_name else (r.get('editor_username') or 'Unknown')
+                editor_display = f"{editor_role_display} {editor_name}"
+                po_dict['updated_by_name'] = editor_display
+                po_dict['was_edited'] = True
+                if updated_at:
+                    po_dict['updated_at'] = str(updated_at)
+            elif updated_at and created_at:
+                # Check if updated (updated_at differs from created_at) but no editor tracked
+                try:
+                    from datetime import datetime
+                    if isinstance(updated_at, str):
+                        updated_dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                    else:
+                        updated_dt = updated_at
+                    if isinstance(created_at, str):
+                        created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    else:
+                        created_dt = created_at
+                    # Compare timestamps - allow small difference for database precision
+                    time_diff = abs((updated_dt - created_dt).total_seconds())
+                    po_dict['was_edited'] = time_diff > 1  # More than 1 second difference
+                    po_dict['updated_at'] = str(updated_at)
+                    if po_dict['was_edited']:
+                        po_dict['updated_by_name'] = None  # Editor not tracked
+                except:
+                    # Fallback: simple string comparison
+                    po_dict['was_edited'] = str(updated_at) != str(created_at)
+                    po_dict['updated_at'] = str(updated_at)
+                    if po_dict['was_edited']:
+                        po_dict['updated_by_name'] = None
+            else:
+                po_dict['was_edited'] = False
+                if updated_at:
+                    po_dict['updated_at'] = str(updated_at)
+            purchase_orders.append(po_dict)
+        
+        return jsonify({'success': True, 'purchase_orders': purchase_orders})
 
 
 @manager_bp.patch('/purchase-orders/<int:po_id>')
@@ -2372,9 +3095,64 @@ def update_purchase_order(po_id: int):
         me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
         if not me or me['role'] not in ('manager','admin'):
             return jsonify({'success': False, 'error': 'Forbidden'}), 403
+        
+        # Check if PO exists and belongs to pharmacy
+        po = conn.execute(text('select id, status from purchase_orders where id = :id and pharmacy_id = :ph'), {'id': po_id, 'ph': me['pharmacy_id']}).mappings().first()
+        if not po:
+            return jsonify({'success': False, 'error': 'Purchase order not found'}), 404
+        
+        # Track if anything was updated
+        items_updated = False
+        
+        # Update items if provided
+        if 'items' in data and isinstance(data['items'], list):
+            for item in data['items']:
+                product_id = item.get('product_id')
+                quantity = item.get('quantity')
+                if product_id and quantity and quantity > 0:
+                    # Check if item exists
+                    existing = conn.execute(text('select id, unit_cost from purchase_order_items where po_id = :po and product_id = :pid'), {'po': po_id, 'pid': int(product_id)}).mappings().first()
+                    if existing:
+                        # Update existing item
+                        unit_cost = existing['unit_cost']
+                        conn.execute(text('''
+                            update purchase_order_items
+                            set quantity = :q, total_cost = :q * :uc
+                            where po_id = :po and product_id = :pid
+                        '''), {'po': po_id, 'pid': int(product_id), 'q': int(quantity), 'uc': float(unit_cost)})
+                        items_updated = True
+                    else:
+                        # Insert new item
+                        unit_cost = item.get('unit_cost', 0)
+                        conn.execute(text('''
+                            insert into purchase_order_items (po_id, product_id, quantity, unit_cost, total_cost)
+                            values (:po, :pid, :q, :uc, :tc)
+                        '''), {'po': po_id, 'pid': int(product_id), 'q': int(quantity), 'uc': float(unit_cost), 'tc': float(unit_cost) * int(quantity)})
+                        items_updated = True
+        
         # Update status and when received create batches and bump inventory
+        # Also update updated_at if items were changed or status changed
         new_status = (data.get('status') or '').lower() or None
-        conn.execute(text('update purchase_orders set status = coalesce(:st, status), expected_delivery_at = coalesce(:eta, expected_delivery_at), updated_at = now() where id = :id and pharmacy_id = :ph'), {'st': new_status, 'eta': data.get('expected_delivery_at'), 'id': po_id, 'ph': me['pharmacy_id']})
+        update_fields = []
+        update_params = {'id': po_id, 'ph': me['pharmacy_id']}
+        
+        if new_status:
+            update_fields.append('status = :st')
+            update_params['st'] = new_status
+        
+        if 'expected_delivery_at' in data:
+            update_fields.append('expected_delivery_at = :eta')
+            update_params['eta'] = data.get('expected_delivery_at')
+        
+        # Always update updated_at and updated_by if items changed or status/eta changed
+        if items_updated or new_status or 'expected_delivery_at' in data:
+            update_fields.append('updated_at = now()')
+            update_fields.append('updated_by = :updater')
+            update_params['updater'] = user_id
+        
+        if update_fields:
+            update_query = f"update purchase_orders set {', '.join(update_fields)} where id = :id and pharmacy_id = :ph"
+            conn.execute(text(update_query), update_params)
         if new_status == 'received':
             _ensure_batches_table(conn)
             items = conn.execute(text('select product_id, quantity, unit_cost from purchase_order_items where po_id = :po'), {'po': po_id}).mappings().all()
@@ -2386,11 +3164,60 @@ def update_purchase_order(po_id: int):
                     values (:pid, :bn, :q, :exp)
                     on conflict (product_id, batch_number) do update set quantity = inventory_batches.quantity + excluded.quantity
                 '''), {'pid': it['product_id'], 'bn': batch_no, 'q': it['quantity'], 'exp': data.get('default_expiration_date')})
+                
+                # Calculate available stock (delivered - sold - disposed, excluding expired)
+                available_stock = conn.execute(text('''
+                    select coalesce(sum(quantity - sold_quantity - coalesce(disposed_quantity, 0)),0) 
+                    from inventory_batches 
+                    where product_id = :pid 
+                    and (expiration_date is null or expiration_date > current_date)
+                '''), {'pid': it['product_id']}).scalar() or 0
+                
+                # Get old stock before update
+                old_inv = conn.execute(text('select current_stock from inventory where product_id = :pid'), {'pid': it['product_id']}).mappings().first()
+                old_stock = int(old_inv['current_stock']) if old_inv else 0
+                
+                # Update inventory with available stock
                 conn.execute(text('''
                     insert into inventory (product_id, current_stock, reserved_stock)
-                    values (:pid, :q, 0)
-                    on conflict (product_id) do update set current_stock = inventory.current_stock + excluded.current_stock, last_updated = now()
-                '''), {'pid': it['product_id'], 'q': it['quantity']})
+                    values (:pid, :available, 0)
+                    on conflict (product_id) do update set current_stock = :available, last_updated = now()
+                '''), {'pid': it['product_id'], 'available': available_stock})
+                
+                new_stock = available_stock
+                
+                # If stock increased, mark approved requests as delivered only if quantity matches
+                if new_stock > old_stock:
+                    stock_increase = new_stock - old_stock
+                    # Find approved requests for this product that haven't been delivered yet
+                    approved_requests = conn.execute(text('''
+                        select id, quantity_change, status
+                        from inventory_adjustment_requests
+                        where product_id = :pid 
+                        and status = 'approved'
+                        and quantity_change > 0
+                        order by created_at asc
+                    '''), {'pid': it['product_id']}).mappings().all()
+                    
+                    # Mark requests as delivered only if stock increase matches the requested quantity
+                    remaining_increase = stock_increase
+                    for req in approved_requests:
+                        if remaining_increase <= 0:
+                            break
+                        if req['status'] == 'approved':
+                            requested_qty = int(req['quantity_change'])
+                            # Only mark as delivered if the stock increase matches or exceeds the requested quantity
+                            if remaining_increase >= requested_qty:
+                                # Mark this request as delivered
+                                conn.execute(text('''
+                                    update inventory_adjustment_requests
+                                    set status = 'delivered', decided_at = now()
+                                    where id = :req_id and status = 'approved'
+                                '''), {'req_id': req['id']})
+                                remaining_increase -= requested_qty
+                            else:
+                                # Not enough stock increase to fulfill this request, stop checking
+                                break
         return jsonify({'success': True})
 
 
@@ -2518,32 +3345,63 @@ def get_stock_report():
         
         where_clause = ' and '.join(conditions)
         
+        # Calculate current_stock from batches (available stock = delivered - sold, excluding expired)
+        # Note: Disposed expired products don't affect this since expired batches are already excluded
         query = text(f'''
             select 
                 p.id as product_id,
                 p.name as product_name,
                 pc.name as category_name,
-                coalesce(i.current_stock, 0) as current_stock,
+                coalesce((
+                    select sum(b.quantity - coalesce(b.sold_quantity, 0))
+                    from inventory_batches b
+                    where b.product_id = p.id
+                    and (b.expiration_date is null or b.expiration_date > current_date)
+                ), 0) as current_stock,
                 coalesce(p.reorder_point, 10) as reorder_point,
                 p.unit_price,
                 p.cost_price,
                 p.location,
                 case 
-                    when coalesce(i.current_stock, 0) = 0 then 'Out of Stock'
-                    when coalesce(i.current_stock, 0) <= coalesce(p.reorder_point, 10) then 'Low Stock'
+                    when coalesce((
+                        select sum(b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0))
+                        from inventory_batches b
+                        where b.product_id = p.id
+                        and (b.expiration_date is null or b.expiration_date > current_date)
+                    ), 0) = 0 then 'Out of Stock'
+                    when coalesce((
+                        select sum(b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0))
+                        from inventory_batches b
+                        where b.product_id = p.id
+                        and (b.expiration_date is null or b.expiration_date > current_date)
+                    ), 0) <= coalesce(p.reorder_point, 10) then 'Low Stock'
                     else 'In Stock'
                 end as stock_status
             from products p
             left join product_categories pc on p.category_id = pc.id
-            left join inventory i on p.id = i.product_id
             where {where_clause}
-            order by 
+                order by 
                 case 
-                    when coalesce(i.current_stock, 0) = 0 then 1
-                    when coalesce(i.current_stock, 0) <= coalesce(p.reorder_point, 10) then 2
+                    when coalesce((
+                        select sum(b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0))
+                        from inventory_batches b
+                        where b.product_id = p.id
+                        and (b.expiration_date is null or b.expiration_date > current_date)
+                    ), 0) = 0 then 1
+                    when coalesce((
+                        select sum(b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0))
+                        from inventory_batches b
+                        where b.product_id = p.id
+                        and (b.expiration_date is null or b.expiration_date > current_date)
+                    ), 0) <= coalesce(p.reorder_point, 10) then 2
                     else 3
                 end,
-                coalesce(i.current_stock, 0) asc, p.name
+                coalesce((
+                    select sum(b.quantity - coalesce(b.sold_quantity, 0) - coalesce(b.disposed_quantity, 0))
+                    from inventory_batches b
+                    where b.product_id = p.id
+                    and (b.expiration_date is null or b.expiration_date > current_date)
+                ), 0) asc, p.name
         ''')
         
         stock_data = conn.execute(query, params).mappings().all()
@@ -3044,7 +3902,7 @@ def analytics_abc_ved():
 
 	with engine.connect() as conn:
 		me = conn.execute(text('select id, role, pharmacy_id from users where id = :id'), {'id': user_id}).mappings().first()
-		if not me or me['role'] not in ('manager','admin'):
+		if not me or me['role'] not in ('staff','manager','admin'):
 			return jsonify({'success': False, 'error': 'Forbidden'}), 403
 
 		params = {'ph': me['pharmacy_id'], 'from': frm, 'to': to}

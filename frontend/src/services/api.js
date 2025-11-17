@@ -138,6 +138,16 @@ export const ManagerAPI = {
   listSuppliers: (token) => apiRequest('/api/manager/suppliers', { token }),
   createSupplier: (payload, token) => apiRequest('/api/manager/suppliers', { method: 'POST', body: payload, token }),
   updateSupplier: (id, payload, token) => apiRequest(`/api/manager/suppliers/${id}`, { method: 'PATCH', body: payload, token }),
+  disposeExpiredProduct: (productId, quantity, token) => apiRequest(`/api/manager/dispose-expired/${productId}`, { method: 'POST', body: { quantity }, token }),
+  listDisposedProducts: (token, params = {}) => {
+    const query = new URLSearchParams();
+    if (params.page) query.append('page', params.page);
+    if (params.page_size) query.append('page_size', params.page_size);
+    if (params.search) query.append('search', params.search);
+    if (params.date_from) query.append('date_from', params.date_from);
+    if (params.date_to) query.append('date_to', params.date_to);
+    return apiRequest(`/api/manager/disposed-products?${query.toString()}`, { token });
+  },
   deleteSupplier: (id, token) => apiRequest(`/api/manager/suppliers/${id}`, { method: 'DELETE', token }),
   // Purchase Orders
   createPurchaseOrder: (payload, token) => apiRequest('/api/manager/purchase-orders', { method: 'POST', body: payload, token }),
@@ -187,6 +197,33 @@ export const StaffAPI = {
     const q = new URLSearchParams(params).toString();
     return apiRequest(`/api/staff/sustainability/expiry-risk${q ? `?${q}` : ''}`, { token });
   },
+  // Use manager endpoints (now accessible by staff for read operations)
+  getSustainabilityDashboard: (params = {}, token) => {
+    const q = new URLSearchParams(params).toString();
+    return apiRequest(`/api/manager/sustainability/dashboard${q ? `?${q}` : ''}`, { token });
+  },
+  getWasteReduction: (params = {}, token) => {
+    const q = new URLSearchParams(params).toString();
+    return apiRequest(`/api/manager/sustainability/waste-reduction${q ? `?${q}` : ''}`, { token });
+  },
+  getReturnedItems: (token) => apiRequest('/api/manager/returned-items', { token }),
+  listProductsByStatus: (status, token) => apiRequest(`/api/manager/products?status=${status}`, { token }),
+  listPurchaseOrders: (token) => apiRequest('/api/manager/purchase-orders', { token }),
+  listSuppliers: (token) => apiRequest('/api/manager/suppliers', { token }),
+  listStaff: (token, status = 'all') => apiRequest(`/api/manager/staff?status=${encodeURIComponent(status)}`, { token }),
+  // Disposed products (staff can view but manager endpoint allows staff access)
+  listDisposedProducts: (token, params = {}) => {
+    const query = new URLSearchParams();
+    if (params.page) query.append('page', params.page);
+    if (params.page_size) query.append('page_size', params.page_size);
+    if (params.search) query.append('search', params.search);
+    if (params.date_from) query.append('date_from', params.date_from);
+    if (params.date_to) query.append('date_to', params.date_to);
+    const queryString = query.toString();
+    return apiRequest(`/api/manager/disposed-products${queryString ? `?${queryString}` : ''}`, { token });
+  },
+  // Dispose expired products (staff can dispose, manager endpoint allows staff access)
+  disposeExpiredProduct: (productId, quantity, token) => apiRequest(`/api/manager/dispose-expired/${productId}`, { method: 'POST', body: { quantity }, token }),
 };
 
 export const AdminAPI = {
@@ -194,6 +231,8 @@ export const AdminAPI = {
   getPharmacyStorage: (pharmacyId, token) => apiRequest(`/api/admin/pharmacy/${pharmacyId}/storage`, { token }),
   listPharmacies: (token) => apiRequest('/api/admin/pharmacies', { token }),
   createPharmacy: (payload, token) => apiRequest('/api/admin/pharmacies', { method: 'POST', body: payload, token }),
+  deactivatePharmacy: (pharmacyId, token) => apiRequest(`/api/admin/pharmacies/${pharmacyId}/deactivate`, { method: 'PATCH', token }),
+  activatePharmacy: (pharmacyId, token) => apiRequest(`/api/admin/pharmacies/${pharmacyId}/activate`, { method: 'PATCH', token }),
   createUser: (payload, token) => apiRequest('/api/admin/users', { method: 'POST', body: payload, token }),
   updateUserStatus: (userId, isActive, token) => apiRequest(`/api/admin/users/${userId}/status`, { method: 'PATCH', body: { is_active: isActive }, token }),
   listSubscriptions: (params = {}, token) => {

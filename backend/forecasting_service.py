@@ -283,11 +283,21 @@ class ForecastingService:
             denom = (np.abs(test.values) + np.abs(pred) + eps)
             smape = np.mean(2.0 * np.abs(test.values - pred) / denom) * 100.0
             accuracy = float(max(0.0, min(100.0, 100.0 - smape)))
+
+            # Classic MAPE (ignoring zero-actual points)
+            valid_mask = np.abs(test.values) > eps
+            if np.any(valid_mask):
+                mape = np.mean(
+                    np.abs((test.values[valid_mask] - pred[valid_mask]) / test.values[valid_mask])
+                ) * 100.0
+            else:
+                mape = None
             
             return {
                 'mae': float(mae),
                 'rmse': float(rmse),
                 'accuracy': float(accuracy),
+                'mape': float(mape) if mape is not None else None,
                 'model_type': model_meta['type']
             }
         except Exception as e:
@@ -384,7 +394,8 @@ class ForecastingService:
             model['meta']['type']: {
                 'accuracy': model['metrics']['accuracy'],
                 'mae': model['metrics']['mae'],
-                'rmse': model['metrics']['rmse']
+                'rmse': model['metrics']['rmse'],
+                'mape': model['metrics'].get('mape')
             }
             for model in models
         }

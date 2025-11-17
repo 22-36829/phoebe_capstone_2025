@@ -18,6 +18,8 @@ const AnnouncementsPage = () => {
     type: 'all',
     status: 'all',
     pinned: 'all',
+    date_from: '',
+    date_to: '',
     page: 1,
     per_page: 10,
   });
@@ -29,6 +31,16 @@ const AnnouncementsPage = () => {
     is_pinned: false,
     expires_at: '',
   });
+
+  const MAX_WORDS = 2000;
+  
+  const getWordCount = (text) => {
+    if (!text || !text.trim()) return 0;
+    return text.trim().split(/\s+/).filter(word => word.length > 0).length;
+  };
+
+  const wordCount = getWordCount(formData.content);
+  const isWordLimitExceeded = wordCount > MAX_WORDS;
 
   const loadAnnouncements = useCallback(async () => {
     if (!token) return;
@@ -42,6 +54,8 @@ const AnnouncementsPage = () => {
         ...(filters.type !== 'all' && { type: filters.type }),
         ...(filters.status !== 'all' && { status: filters.status }),
         ...(filters.pinned !== 'all' && { pinned: filters.pinned }),
+        ...(filters.date_from && { date_from: filters.date_from }),
+        ...(filters.date_to && { date_to: filters.date_to }),
       };
       const res = await AnnouncementsAPI.list(params, token);
       if (res.success) {
@@ -74,6 +88,11 @@ const AnnouncementsPage = () => {
       return;
     }
 
+    if (isWordLimitExceeded) {
+      setError(`Content exceeds the maximum word limit of ${MAX_WORDS} words. Please reduce the content.`);
+      return;
+    }
+
     try {
       const payload = {
         ...formData,
@@ -94,6 +113,11 @@ const AnnouncementsPage = () => {
     e.preventDefault();
     if (!formData.title.trim() || !formData.content.trim()) {
       setError('Title and content are required');
+      return;
+    }
+
+    if (isWordLimitExceeded) {
+      setError(`Content exceeds the maximum word limit of ${MAX_WORDS} words. Please reduce the content.`);
       return;
     }
 
@@ -204,7 +228,7 @@ const AnnouncementsPage = () => {
 
       {/* Filters */}
       <div className="bg-white dark:bg-slate-950 rounded-xl p-5 shadow-sm border border-gray-200 dark:border-slate-800">
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-4">
           <div className="relative md:col-span-2">
             <Search className="w-4 h-4 text-gray-400 dark:text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
@@ -245,6 +269,26 @@ const AnnouncementsPage = () => {
             <option value="pinned">Pinned</option>
             <option value="unpinned">Unpinned</option>
           </select>
+          <div className="relative">
+            <Calendar className="w-4 h-4 text-gray-400 dark:text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="date"
+              placeholder="From Date"
+              value={filters.date_from}
+              onChange={(e) => handleFilterChange('date_from', e.target.value)}
+              className="w-full pl-10 pr-3 py-2.5 text-sm border border-gray-300 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white dark:bg-slate-900 text-gray-900 dark:text-slate-200"
+            />
+          </div>
+          <div className="relative">
+            <Calendar className="w-4 h-4 text-gray-400 dark:text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="date"
+              placeholder="To Date"
+              value={filters.date_to}
+              onChange={(e) => handleFilterChange('date_to', e.target.value)}
+              className="w-full pl-10 pr-3 py-2.5 text-sm border border-gray-300 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white dark:bg-slate-900 text-gray-900 dark:text-slate-200"
+            />
+          </div>
         </div>
       </div>
 
@@ -439,14 +483,34 @@ const AnnouncementsPage = () => {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1.5">Content</label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-slate-300">Content</label>
+                  <span className={`text-xs font-medium ${isWordLimitExceeded ? 'text-red-600 dark:text-red-400' : wordCount > MAX_WORDS * 0.8 ? 'text-orange-600 dark:text-orange-400' : 'text-gray-500 dark:text-slate-400'}`}>
+                    {wordCount} / {MAX_WORDS} words
+                  </span>
+                </div>
                 <textarea
                   value={formData.content}
                   onChange={(e) => setFormData({ ...formData, content: e.target.value })}
                   rows={6}
-                  className="w-full px-4 py-2 border border-gray-300 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white dark:bg-slate-900 text-gray-900 dark:text-slate-200 resize-none"
+                  className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white dark:bg-slate-900 text-gray-900 dark:text-slate-200 resize-none ${
+                    isWordLimitExceeded 
+                      ? 'border-red-300 dark:border-red-700 focus:ring-red-500 focus:border-red-500' 
+                      : 'border-gray-300 dark:border-slate-700'
+                  }`}
                   required
+                  maxLength={MAX_WORDS * 10} // Rough estimate to prevent extremely long inputs
                 />
+                {isWordLimitExceeded && (
+                  <p className="mt-1.5 text-xs text-red-600 dark:text-red-400">
+                    Content exceeds the maximum word limit of {MAX_WORDS} words. Please reduce the content.
+                  </p>
+                )}
+                {!isWordLimitExceeded && wordCount > MAX_WORDS * 0.8 && (
+                  <p className="mt-1.5 text-xs text-orange-600 dark:text-orange-400">
+                    You're approaching the word limit. Consider shortening your content.
+                  </p>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-4">

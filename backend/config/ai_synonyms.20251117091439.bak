@@ -116,27 +116,6 @@
     "cherifer": "vitamin",
     "catapres": "clonidine"
   },
-  "keyword_overrides": {
-    "amlodipine": [
-      "AMLODIPINE 10MG",
-      "AMLODIPINE 5MG"
-    ],
-    "ceelin": [
-      "CEELIN DROPS 30ML",
-      "CEELIN PLUS CHEWABLE TAB.",
-      "CEELIN PLUS DROPS 30ML",
-      "CEELIN PLUS SYRUP 120ML",
-      "CEELIN SYRUP 120ML",
-      "CEELIN SYRUP 60ML"
-    ],
-    "biogesic": [
-      "BIOGESIC 120MG",
-      "BIOGESIC 250MG",
-      "BIOGESIC 500MG",
-      "BIOGESIC DROPS"
-    ],
-    "catapres": [
-      "CATAPRES 75MG"
-    ]
-  }
+  "keyword_overrides": {}
 }
+

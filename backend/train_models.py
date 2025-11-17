@@ -104,9 +104,16 @@ def train_product_model(service, pharmacy_id, product_id, product_name, days=365
         
         metrics = result.get('metrics', {})
         comparison = result.get('comparison', {})
+        mape_value = metrics.get('mape')
+        mape_str = f" | MAPE: {mape_value:.2f}%" if isinstance(mape_value, (int, float)) else ""
         
         # Print comparison - show all models that were compared
-        print(f" [SUCCESS] Best: {result['model_type'].upper()} | Accuracy: {metrics.get('accuracy', 0):.2f}% | MAE: {metrics.get('mae', 0):.4f} ({elapsed:.1f}s)")
+        print(
+            f" [SUCCESS] Best: {result['model_type'].upper()} | "
+            f"Accuracy: {metrics.get('accuracy', 0):.2f}% | "
+            f"MAE: {metrics.get('mae', 0):.4f}{mape_str} "
+            f"({elapsed:.1f}s)"
+        )
         if comparison:
             print(f"           Comparison:", end=' ')
             # Show in order: SARIMAX, PROPHET

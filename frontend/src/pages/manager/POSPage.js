@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Search, 
   ShoppingCart, 
@@ -11,9 +11,10 @@ import {
   AlertTriangle,
   CheckCircle,
   Receipt,
-  History
+  History,
+  MapPin
 } from 'lucide-react';
-import { POSAPI } from '../../services/api';
+import { POSAPI, ManagerAPI } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
 
 const POSPage = () => {
@@ -25,6 +26,9 @@ const POSPage = () => {
   const [cart, setCart] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
+  const [productPage, setProductPage] = useState(1);
+  const [productPageSize, setProductPageSize] = useState(20);
+  const [productPageInput, setProductPageInput] = useState('');
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [customerName, setCustomerName] = useState('');
@@ -39,6 +43,11 @@ const POSPage = () => {
   const [showTransactionHistory, setShowTransactionHistory] = useState(false);
   const [transactions, setTransactions] = useState([]);
   const [transactionSearchTerm, setTransactionSearchTerm] = useState('');
+  const [transactionDateFrom, setTransactionDateFrom] = useState('');
+  const [transactionDateTo, setTransactionDateTo] = useState('');
+  const [transactionPage, setTransactionPage] = useState(1);
+  const [transactionPageSize, setTransactionPageSize] = useState(10);
+  const [transactionPageInput, setTransactionPageInput] = useState('');
   const [loadingTransactions, setLoadingTransactions] = useState(false);
   const [showReturnModal, setShowReturnModal] = useState(false);
   const [selectedTransaction, setSelectedTransaction] = useState(null);
@@ -46,6 +55,7 @@ const POSPage = () => {
   const [returnItems, setReturnItems] = useState([]);
   const [processingReturn, setProcessingReturn] = useState(false);
   const [returnMeta, setReturnMeta] = useState({ lastEditedBy: null, lastEditedAt: null });
+  const [pharmacy, setPharmacy] = useState({ name: '', address: '', phone: '', email: '', license_number: '' });
 
   // Calculate totals
   const subtotal = cart.reduce((sum, item) => sum + (parseFloat(item.quantity) * parseFloat(item.unit_price)), 0);
@@ -120,6 +130,9 @@ const POSPage = () => {
   const filterProducts = useCallback(() => {
     let filtered = products;
 
+    // Only show active products
+    filtered = filtered.filter(product => product.is_active !== false);
+
     // Filter by category
     if (selectedCategory !== 'all') {
       filtered = filtered.filter(product => product.category_name === selectedCategory);
@@ -136,6 +149,106 @@ const POSPage = () => {
     setFilteredProducts(filtered);
   }, [products, selectedCategory, searchTerm]);
 
+  // Pagination for products
+  const productTotalPages = Math.max(1, Math.ceil(filteredProducts.length / productPageSize));
+  const productCurrentPage = Math.min(productPage, productTotalPages);
+  const productStartIndex = (productCurrentPage - 1) * productPageSize;
+  const productEndIndex = Math.min(productStartIndex + productPageSize, filteredProducts.length);
+  const paginatedProducts = filteredProducts.slice(productStartIndex, productEndIndex);
+
+  // Compact pagination range generator for products
+  const getProductCompactRange = (currentPage, totalPageCount) => {
+    const maxButtons = 5;
+    let start = Math.max(1, currentPage - 2);
+    let end = Math.min(totalPageCount, start + maxButtons - 1);
+    start = Math.max(1, end - maxButtons + 1);
+    return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+  };
+
+  const goToProductPage = (pageNum) => {
+    const clamped = Math.max(1, Math.min(productTotalPages, Number(pageNum)));
+    if (!Number.isNaN(clamped)) setProductPage(clamped);
+  };
+
+  const handleProductPageInputChange = (e) => {
+    setProductPageInput(e.target.value);
+  };
+
+  const handleProductPageInputSubmit = (e) => {
+    e.preventDefault();
+    const pageNum = parseInt(productPageInput, 10);
+    if (!Number.isNaN(pageNum)) {
+      const clamped = Math.max(1, Math.min(productTotalPages, pageNum));
+      setProductPage(clamped);
+    }
+    setProductPageInput('');
+  };
+
+  // Reset product page when filters change
+  useEffect(() => {
+    setProductPage(1);
+    setProductPageInput('');
+  }, [searchTerm, selectedCategory, filteredProducts.length]);
+
+  // Filtered transactions with pagination
+  const filteredTransactions = useMemo(() => {
+    return transactions.filter(transaction => {
+      // Text search filter
+      const searchLower = transactionSearchTerm.trim().toLowerCase();
+      const matchesSearch = !searchLower || 
+        transaction.sale_number.toLowerCase().includes(searchLower) ||
+        (transaction.customer_name && transaction.customer_name.toLowerCase().includes(searchLower));
+      
+      // Date range filter
+      const created = transaction.created_at ? new Date(transaction.created_at) : null;
+      const fromOk = !transactionDateFrom || (created && created >= new Date(transactionDateFrom));
+      const toOk = !transactionDateTo || (created && created <= new Date(transactionDateTo + 'T23:59:59'));
+      
+      return matchesSearch && fromOk && toOk;
+    });
+  }, [transactions, transactionSearchTerm, transactionDateFrom, transactionDateTo]);
+
+  // Pagination calculations
+  const transactionTotalPages = Math.max(1, Math.ceil(filteredTransactions.length / transactionPageSize));
+  const transactionCurrentPage = Math.min(transactionPage, transactionTotalPages);
+  const transactionStartIndex = (transactionCurrentPage - 1) * transactionPageSize;
+  const transactionEndIndex = Math.min(transactionStartIndex + transactionPageSize, filteredTransactions.length);
+  const paginatedTransactions = filteredTransactions.slice(transactionStartIndex, transactionEndIndex);
+
+  // Compact pagination range generator (same as inventory)
+  const getCompactRange = (currentPage, totalPageCount) => {
+    const maxButtons = 5;
+    let start = Math.max(1, currentPage - 2);
+    let end = Math.min(totalPageCount, start + maxButtons - 1);
+    start = Math.max(1, end - maxButtons + 1);
+    return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+  };
+
+  const goToTransactionPage = (pageNum) => {
+    const clamped = Math.max(1, Math.min(transactionTotalPages, Number(pageNum)));
+    if (!Number.isNaN(clamped)) setTransactionPage(clamped);
+  };
+
+  const handleTransactionPageInputChange = (e) => {
+    setTransactionPageInput(e.target.value);
+  };
+
+  const handleTransactionPageInputSubmit = (e) => {
+    e.preventDefault();
+    const pageNum = parseInt(transactionPageInput, 10);
+    if (!Number.isNaN(pageNum)) {
+      const clamped = Math.max(1, Math.min(transactionTotalPages, pageNum));
+      setTransactionPage(clamped);
+    }
+    setTransactionPageInput('');
+  };
+
+  // Reset page when filters change
+  useEffect(() => {
+    setTransactionPage(1);
+    setTransactionPageInput('');
+  }, [transactionSearchTerm, transactionDateFrom, transactionDateTo]);
+
   // Effects
   useEffect(() => {
     fetchProducts();
@@ -146,6 +259,22 @@ const POSPage = () => {
     filterProducts();
   }, [filterProducts]);
 
+  // Fetch pharmacy information
+  useEffect(() => {
+    const fetchPharmacy = async () => {
+      try {
+        if (!token) return;
+        const res = await ManagerAPI.getPharmacy(token);
+        if (res.success && res.pharmacy) {
+          setPharmacy(res.pharmacy);
+        }
+      } catch (error) {
+        console.error('Error fetching pharmacy info:', error);
+      }
+    };
+    fetchPharmacy();
+  }, [token]);
+
   // Cart operations
   const addToCart = (product) => {
     if (!product.in_stock) {
@@ -153,8 +282,23 @@ const POSPage = () => {
       return;
     }
 
+    const currentStock = Number(product.current_stock || 0);
+    if (currentStock <= 0) {
+      setError('Product is out of stock');
+      return;
+    }
+
     setCart(prevCart => {
       const existingItem = prevCart.find(item => item.product_id === product.id);
+      const currentCartQuantity = existingItem ? existingItem.quantity : 0;
+      
+      // Check if adding one more would exceed available stock
+      if (currentCartQuantity >= currentStock) {
+        setError(`Cannot add more. Only ${currentStock} available in stock.`);
+        setTimeout(() => setError(''), 3000);
+        return prevCart;
+      }
+
       if (existingItem) {
         return prevCart.map(item =>
           item.product_id === product.id
@@ -167,7 +311,8 @@ const POSPage = () => {
           name: product.name,
           unit_price: parseFloat(product.unit_price),
           quantity: 1,
-          total_price: parseFloat(product.unit_price)
+          total_price: parseFloat(product.unit_price),
+          current_stock: currentStock // Store for validation
         }];
       }
     });
@@ -178,6 +323,29 @@ const POSPage = () => {
   const updateQuantity = (productId, newQuantity) => {
     if (newQuantity <= 0) {
       removeFromCart(productId);
+      return;
+    }
+
+    // Find the product to get current stock
+    const product = products.find(p => p.id === productId);
+    const currentStock = product ? Number(product.current_stock || 0) : 0;
+
+    // Validate against available stock
+    if (newQuantity > currentStock) {
+      setError(`Cannot add more. Only ${currentStock} available in stock.`);
+      setTimeout(() => setError(''), 3000);
+      // Set to max available instead
+      if (currentStock > 0) {
+        setCart(prevCart =>
+          prevCart.map(item =>
+            item.product_id === productId
+              ? { ...item, quantity: currentStock, total_price: currentStock * parseFloat(item.unit_price) }
+              : item
+          )
+        );
+      } else {
+        removeFromCart(productId);
+      }
       return;
     }
 
@@ -201,11 +369,34 @@ const POSPage = () => {
 
   const saveEditQuantity = (productId) => {
     const newQuantity = parseInt(editQuantityValue);
-    if (newQuantity <= 0) {
+    if (isNaN(newQuantity) || newQuantity <= 0) {
       removeFromCart(productId);
-    } else {
-      updateQuantity(productId, newQuantity);
+      setEditingQuantity(null);
+      setEditQuantityValue('');
+      return;
     }
+
+    // Find the product to get current stock
+    const product = products.find(p => p.id === productId);
+    const currentStock = product ? Number(product.current_stock || 0) : 0;
+
+    // Validate against available stock
+    if (newQuantity > currentStock) {
+      setError(`Cannot set quantity to ${newQuantity}. Only ${currentStock} available in stock.`);
+      setTimeout(() => setError(''), 3000);
+      // Set to max available or remove if 0
+      if (currentStock > 0) {
+        setEditQuantityValue(currentStock.toString());
+        updateQuantity(productId, currentStock);
+      } else {
+        removeFromCart(productId);
+      }
+      setEditingQuantity(null);
+      setEditQuantityValue('');
+      return;
+    }
+
+    updateQuantity(productId, newQuantity);
     setEditingQuantity(null);
     setEditQuantityValue('');
   };
@@ -286,12 +477,427 @@ const POSPage = () => {
     }
   };
 
+  // Generate professional pharmacy receipt HTML
+  const generateReceiptHTML = (receiptData, pharmacyInfo = null) => {
+    const ph = pharmacyInfo || pharmacy;
+    const pharmacyName = ph.name || 'PHOEBE DRUGSTORE';
+    const pharmacyAddress = ph.address || '';
+    const pharmacyPhone = ph.phone || '';
+    const pharmacyEmail = ph.email || '';
+    const date = new Date(receiptData.created_at);
+    const formattedDate = date.toLocaleDateString('en-US', { 
+      month: 'short', 
+      day: '2-digit',
+      year: 'numeric'
+    });
+    const formattedTime = date.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+    
+    const itemsHTML = (receiptData.items || []).map(item => {
+      const itemName = item.name || item.product_name || '';
+      const quantity = item.quantity || 0;
+      const unitPrice = parseFloat(item.unit_price || 0);
+      const totalPrice = parseFloat(item.total_price || 0);
+      
+      // Handle long product names
+      const maxNameLength = 20;
+      const displayName = itemName.length > maxNameLength 
+        ? itemName.substring(0, maxNameLength - 3) + '...' 
+        : itemName;
+      
+      return `
+        <div class="item-row">
+          <div class="item-details">
+            <div class="item-name">${displayName}</div>
+            ${itemName.length > maxNameLength ? `<div class="item-name-full">${itemName}</div>` : ''}
+          </div>
+          <div class="item-qty">${quantity}</div>
+          <div class="item-price">₱${unitPrice.toFixed(2)}</div>
+          <div class="item-total">₱${totalPrice.toFixed(2)}</div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Receipt - ${receiptData.sale_number}</title>
+  <style>
+    @media print {
+      @page {
+        size: 80mm auto;
+        margin: 0;
+      }
+      body {
+        margin: 0;
+        padding: 8mm 5mm;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      .no-print {
+        display: none !important;
+      }
+    }
+    
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: 'Courier New', 'Monaco', 'Menlo', monospace;
+      font-size: 10px;
+      line-height: 1.3;
+      color: #000;
+      background: #fff;
+      padding: 8mm 5mm;
+      max-width: 80mm;
+      margin: 0 auto;
+    }
+    
+    .receipt {
+      width: 100%;
+    }
+    
+    .header {
+      text-align: center;
+      padding-bottom: 8px;
+      margin-bottom: 8px;
+      border-bottom: 1px solid #000;
+    }
+    
+    .pharmacy-name {
+      font-size: 14px;
+      font-weight: bold;
+      letter-spacing: 0.5px;
+      margin-bottom: 2px;
+      text-transform: uppercase;
+    }
+    
+    .pharmacy-tagline {
+      font-size: 8px;
+      color: #333;
+      margin-bottom: 4px;
+      font-style: italic;
+    }
+    
+    .pharmacy-info {
+      font-size: 7px;
+      color: #555;
+      line-height: 1.4;
+      margin-top: 4px;
+    }
+    
+    .pharmacy-info div {
+      margin: 1px 0;
+    }
+    
+    .divider {
+      border-top: 1px dashed #666;
+      margin: 6px 0;
+    }
+    
+    .receipt-info {
+      margin: 8px 0;
+      padding: 6px 0;
+    }
+    
+    .receipt-info-row {
+      display: flex;
+      justify-content: space-between;
+      margin: 2px 0;
+      font-size: 9px;
+    }
+    
+    .receipt-info-label {
+      font-weight: bold;
+    }
+    
+    .receipt-info-value {
+      text-align: right;
+    }
+    
+    .items-section {
+      margin: 8px 0;
+    }
+    
+    .items-header {
+      border-bottom: 1px solid #000;
+      padding-bottom: 3px;
+      margin-bottom: 4px;
+    }
+    
+    .items-header-row {
+      display: flex;
+      font-size: 8px;
+      font-weight: bold;
+      text-transform: uppercase;
+    }
+    
+    .items-header-row .col-item {
+      width: 40%;
+    }
+    
+    .items-header-row .col-qty {
+      width: 12%;
+      text-align: center;
+    }
+    
+    .items-header-row .col-price {
+      width: 24%;
+      text-align: right;
+    }
+    
+    .items-header-row .col-total {
+      width: 24%;
+      text-align: right;
+    }
+    
+    .items-list {
+      margin: 4px 0;
+    }
+    
+    .item-row {
+      display: flex;
+      padding: 3px 0;
+      border-bottom: 1px dotted #ccc;
+      font-size: 9px;
+    }
+    
+    .item-details {
+      width: 40%;
+      word-wrap: break-word;
+    }
+    
+    .item-name {
+      font-weight: 500;
+    }
+    
+    .item-name-full {
+      font-size: 7px;
+      color: #666;
+      margin-top: 1px;
+    }
+    
+    .item-qty {
+      width: 12%;
+      text-align: center;
+    }
+    
+    .item-price {
+      width: 24%;
+      text-align: right;
+    }
+    
+    .item-total {
+      width: 24%;
+      text-align: right;
+      font-weight: bold;
+    }
+    
+    .totals-section {
+      margin-top: 8px;
+      padding-top: 6px;
+      border-top: 1px dashed #666;
+    }
+    
+    .total-row {
+      display: flex;
+      justify-content: space-between;
+      margin: 3px 0;
+      font-size: 9px;
+    }
+    
+    .total-label {
+      font-weight: bold;
+    }
+    
+    .total-amount {
+      font-weight: bold;
+      text-align: right;
+    }
+    
+    .grand-total {
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 2px solid #000;
+      font-size: 12px;
+      font-weight: bold;
+      text-transform: uppercase;
+    }
+    
+    .discount-row {
+      color: #d32f2f;
+    }
+    
+    .payment-info {
+      margin-top: 8px;
+      padding: 6px;
+      background: #f0f0f0;
+      border: 1px solid #ddd;
+      font-size: 9px;
+    }
+    
+    .payment-method {
+      display: flex;
+      justify-content: space-between;
+      font-weight: bold;
+    }
+    
+    .footer {
+      text-align: center;
+      margin-top: 12px;
+      padding-top: 8px;
+      border-top: 1px dashed #666;
+    }
+    
+    .footer-message {
+      font-size: 7px;
+      color: #555;
+      margin: 3px 0;
+      line-height: 1.4;
+    }
+    
+    .footer-thanks {
+      font-size: 10px;
+      font-weight: bold;
+      margin-top: 6px;
+      text-transform: uppercase;
+    }
+    
+    .separator {
+      text-align: center;
+      margin: 6px 0;
+      font-size: 8px;
+      color: #999;
+    }
+    
+    .barcode-area {
+      text-align: center;
+      margin: 8px 0;
+      padding: 4px;
+      border: 1px dashed #ccc;
+      font-size: 7px;
+      color: #999;
+    }
+  </style>
+</head>
+<body>
+  <div class="receipt">
+    <div class="header">
+      <div class="pharmacy-name">${pharmacyName.toUpperCase()}</div>
+      <div class="pharmacy-tagline">Your Trusted Health Partner</div>
+      <div class="pharmacy-info">
+        ${pharmacyAddress ? `<div>${pharmacyAddress}</div>` : ''}
+        ${pharmacyPhone ? `<div>Tel: ${pharmacyPhone}</div>` : ''}
+        ${pharmacyEmail ? `<div>Email: ${pharmacyEmail}</div>` : ''}
+      </div>
+    </div>
+    
+    <div class="divider"></div>
+    
+    <div class="receipt-info">
+      <div class="receipt-info-row">
+        <span class="receipt-info-label">RECEIPT #:</span>
+        <span class="receipt-info-value">${receiptData.sale_number}</span>
+      </div>
+      <div class="receipt-info-row">
+        <span class="receipt-info-label">DATE:</span>
+        <span class="receipt-info-value">${formattedDate}</span>
+      </div>
+      <div class="receipt-info-row">
+        <span class="receipt-info-label">TIME:</span>
+        <span class="receipt-info-value">${formattedTime}</span>
+      </div>
+      ${receiptData.customer_name ? `
+      <div class="receipt-info-row">
+        <span class="receipt-info-label">CUSTOMER:</span>
+        <span class="receipt-info-value">${receiptData.customer_name.toUpperCase()}</span>
+      </div>
+      ` : ''}
+    </div>
+    
+    <div class="divider"></div>
+    
+    <div class="items-section">
+      <div class="items-header">
+        <div class="items-header-row">
+          <div class="col-item">ITEM</div>
+          <div class="col-qty">QTY</div>
+          <div class="col-price">PRICE</div>
+          <div class="col-total">TOTAL</div>
+        </div>
+      </div>
+      <div class="items-list">
+        ${itemsHTML}
+      </div>
+    </div>
+    
+    <div class="divider"></div>
+    
+    <div class="totals-section">
+      <div class="total-row">
+        <span class="total-label">SUBTOTAL:</span>
+        <span class="total-amount">₱${parseFloat(receiptData.subtotal || 0).toFixed(2)}</span>
+      </div>
+      ${receiptData.discount_amount > 0 ? `
+      <div class="total-row discount-row">
+        <span class="total-label">DISCOUNT ${receiptData.discount_type === 'senior_citizen' ? '(SENIOR)' : receiptData.discount_type === 'pwd' ? '(PWD)' : '(SPECIAL)'}:</span>
+        <span class="total-amount">-₱${parseFloat(receiptData.discount_amount || 0).toFixed(2)}</span>
+      </div>
+      ` : ''}
+      <div class="total-row grand-total">
+        <span>TOTAL AMOUNT:</span>
+        <span>₱${parseFloat(receiptData.total_amount || 0).toFixed(2)}</span>
+      </div>
+    </div>
+    
+    <div class="payment-info">
+      <div class="payment-method">
+        <span>PAYMENT:</span>
+        <span>${String(receiptData.payment_method || '').toUpperCase()}</span>
+      </div>
+    </div>
+    
+    <div class="separator">━━━━━━━━━━━━━━━━━━━━</div>
+    
+    <div class="footer">
+      <div class="footer-message">
+        This is your official receipt. Please keep
+      </div>
+      <div class="footer-message">
+        this for warranty and return purposes.
+      </div>
+      <div class="footer-thanks">
+        Thank You!
+      </div>
+      <div class="footer-message" style="margin-top: 4px;">
+        We appreciate your business
+      </div>
+    </div>
+    
+    <div class="barcode-area">
+      ${receiptData.sale_number}
+    </div>
+  </div>
+</body>
+</html>
+    `;
+  };
+
   // Print receipt
   const printReceipt = () => {
     if (!receipt) return;
 
     const printWindow = window.open('', '_blank');
-    const htmlContent = '<html><head><title>Receipt - ' + receipt.sale_number + '</title><style>body { font-family: monospace; font-size: 12px; margin: 0; padding: 20px; } .header { text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; } .item { display: flex; justify-content: space-between; margin-bottom: 5px; } .total { border-top: 1px solid #000; padding-top: 10px; margin-top: 10px; font-weight: bold; } .footer { text-align: center; margin-top: 20px; font-size: 10px; }</style></head><body><div class="header"><h2>PHOEBE DRUGSTORE</h2><p>Receipt #: ' + receipt.sale_number + '</p><p>Date: ' + new Date(receipt.created_at).toLocaleString() + '</p>' + (receipt.customer_name ? '<p>Customer: ' + receipt.customer_name + '</p>' : '') + '</div><div class="items">' + receipt.items.map(item => '<div class="item"><span>' + (item.name || '') + ' x' + item.quantity + '</span><span>₱' + parseFloat(item.total_price).toFixed(2) + '</span></div>').join('') + '</div><div class="total"><div class="item"><span>Subtotal:</span><span>₱' + parseFloat(receipt.subtotal).toFixed(2) + '</span></div>' + (receipt.discount_amount > 0 ? '<div class="item"><span>Discount:</span><span>-₱' + parseFloat(receipt.discount_amount).toFixed(2) + '</span></div>' : '') + '<div class="item"><span>TOTAL:</span><span>₱' + parseFloat(receipt.total_amount).toFixed(2) + '</span></div><div class="item"><span>Payment: ' + String(receipt.payment_method || '').toUpperCase() + '</span><span></span></div></div><div class="footer"><p>Thank you for your purchase!</p><p>Visit us again soon!</p></div></body></html>';
+    const htmlContent = generateReceiptHTML(receipt, pharmacy);
     printWindow.document.write(htmlContent);
     printWindow.document.close();
     printWindow.print();
@@ -522,10 +1128,25 @@ const POSPage = () => {
                     {selectedCategory === 'all' ? 'All Products' : selectedCategory}
                   </h2>
                 </div>
-                <div className="bg-gradient-to-r from-indigo-50 to-violet-50 px-4 py-2 rounded-full border border-indigo-200">
-                  <span className="text-sm text-indigo-700 font-semibold">
-                    {filteredProducts.length} products
-                  </span>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+                  <div className="bg-gradient-to-r from-indigo-50 to-violet-50 px-4 py-2 rounded-full border border-indigo-200">
+                    <span className="text-sm text-indigo-700 font-semibold">
+                      {filteredProducts.length} products
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm text-gray-600 whitespace-nowrap">Items per page:</label>
+                    <select
+                      value={productPageSize}
+                      onChange={(e) => {
+                        setProductPageSize(Number(e.target.value));
+                        setProductPage(1);
+                      }}
+                      className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white"
+                    >
+                      {[20, 35, 50, 100].map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
                 </div>
               </div>
 
@@ -539,8 +1160,9 @@ const POSPage = () => {
 
               {/* Products Grid */}
               {!loading && (
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-7 gap-3">
-                  {filteredProducts.map(product => (
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-7 gap-3">
+                    {paginatedProducts.map(product => (
                     <div
                       key={product.id}
                       onClick={() => addToCart(product)}
@@ -565,7 +1187,15 @@ const POSPage = () => {
                         <h3 className="font-semibold text-gray-900 text-sm mb-2 leading-snug whitespace-normal break-words">
                           {product.name}
                         </h3>
-                        <p className="text-xs text-gray-500 mb-2">{product.category_name}</p>
+                        <p className="text-xs text-gray-500 mb-1">{product.category_name}</p>
+                        
+                        {/* Location */}
+                        {product.location && (
+                          <div className="flex items-center gap-1 mb-2 text-xs text-gray-600">
+                            <MapPin className="w-3 h-3 text-gray-500" />
+                            <span className="truncate">{product.location}</span>
+                          </div>
+                        )}
                         
                         {/* Price */}
                         <div className="text-base font-bold text-indigo-600 mb-2">
@@ -590,7 +1220,73 @@ const POSPage = () => {
                       </div>
                     </div>
                   ))}
-                </div>
+                  </div>
+                  
+                  {/* Pagination Controls */}
+                  {productTotalPages > 1 && (
+                    <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6 pt-4 border-t border-gray-200">
+                      {/* Left: Total */}
+                      <div className="text-sm text-gray-700 order-1 sm:order-1">
+                        Total Items: <span className="font-semibold">{filteredProducts.length}</span>
+                      </div>
+                      {/* Center: Compact paginator */}
+                      <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-full px-2 py-1 shadow-sm order-2 sm:order-2">
+                        <button
+                          aria-label="Previous page"
+                          onClick={() => goToProductPage(productCurrentPage - 1)}
+                          disabled={productCurrentPage === 1}
+                          className={`w-8 h-8 inline-flex items-center justify-center rounded-full text-sm transition-colors ${productCurrentPage === 1 ? 'opacity-40 cursor-not-allowed text-gray-400' : 'hover:bg-gray-50 text-gray-700'}`}
+                          title="Previous"
+                        >
+                          ‹
+                        </button>
+                        {getProductCompactRange(productCurrentPage, productTotalPages).map((num) => (
+                          <button
+                            key={num}
+                            onClick={() => goToProductPage(num)}
+                            className={`w-8 h-8 inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors ${
+                              num === productCurrentPage ? 'bg-indigo-600 text-white shadow-sm' : 'border border-gray-300 text-gray-700 hover:bg-gray-50'
+                            }`}
+                          >
+                            {num}
+                          </button>
+                        ))}
+                        <button
+                          aria-label="Next page"
+                          onClick={() => goToProductPage(productCurrentPage + 1)}
+                          disabled={productCurrentPage === productTotalPages}
+                          className={`w-8 h-8 inline-flex items-center justify-center rounded-full text-sm transition-colors ${productCurrentPage === productTotalPages ? 'opacity-40 cursor-not-allowed text-gray-400' : 'hover:bg-gray-50 text-gray-700'}`}
+                          title="Next"
+                        >
+                          ›
+                        </button>
+                      </div>
+                      {/* Right: Go to page */}
+                      <div className="flex items-center gap-2 text-sm text-gray-700 order-3 sm:order-3 flex-wrap justify-center sm:justify-start">
+                        <span className="whitespace-nowrap">Go to page:</span>
+                        <form onSubmit={handleProductPageInputSubmit} className="flex items-center gap-2">
+                          <input
+                            aria-label="Go to page number"
+                            type="number"
+                            min="1"
+                            max={productTotalPages}
+                            value={productPageInput}
+                            onChange={handleProductPageInputChange}
+                            placeholder={`${productCurrentPage}`}
+                            className="w-16 px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-center"
+                          />
+                          <span className="text-sm text-gray-600 whitespace-nowrap">of {productTotalPages}</span>
+                          <button
+                            type="submit"
+                            className="px-3 py-1.5 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 text-xs font-medium transition-colors"
+                          >
+                            Go
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -622,12 +1318,28 @@ const POSPage = () => {
                 </div>
               ) : (
                 <div className="space-y-3 mb-4">
-                  {cart.map(item => (
+                  {cart.map(item => {
+                    const product = products.find(p => p.id === item.product_id);
+                    const availableStock = product ? Number(product.current_stock || 0) : 0;
+                    return (
                     <div key={item.product_id} className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-3 border border-blue-200 shadow-sm hover:shadow-md transition-shadow">
                       <div className="flex items-start justify-between mb-2">
-                        <h4 className="font-semibold text-xs text-gray-900 line-clamp-1 flex-1 mr-2">
-                          {item.name}
-                        </h4>
+                        <div className="flex-1 mr-2">
+                          <h4 className="font-semibold text-xs text-gray-900 line-clamp-1">
+                            {item.name}
+                          </h4>
+                          {product?.location && (
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <MapPin className="w-3 h-3 text-gray-400" />
+                              <p className="text-xs text-gray-500 truncate">
+                                {product.location}
+                              </p>
+                            </div>
+                          )}
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            {availableStock} available
+                          </p>
+                        </div>
                         <button
                           onClick={() => removeFromCart(item.product_id)}
                           className="p-1 rounded-lg hover:bg-red-100 text-red-500 transition-colors flex-shrink-0"
@@ -644,6 +1356,7 @@ const POSPage = () => {
                               onChange={(e) => setEditQuantityValue(e.target.value)}
                               className="w-12 text-center text-xs font-bold text-gray-900 border-0 focus:outline-none"
                               min="1"
+                              max={availableStock}
                               autoFocus
                             />
                             <button
@@ -676,7 +1389,13 @@ const POSPage = () => {
                             </span>
                             <button
                               onClick={() => updateQuantity(item.product_id, item.quantity + 1)}
-                              className="w-6 h-6 rounded-lg hover:bg-gray-100 flex items-center justify-center transition-colors"
+                              disabled={item.quantity >= availableStock}
+                              className={`w-6 h-6 rounded-lg flex items-center justify-center transition-colors ${
+                                item.quantity >= availableStock
+                                  ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                                  : 'hover:bg-gray-100'
+                              }`}
+                              title={item.quantity >= availableStock ? 'Maximum stock reached' : 'Increase quantity'}
                             >
                               <Plus className="w-3 h-3" />
                             </button>
@@ -692,7 +1411,8 @@ const POSPage = () => {
                         </div>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
@@ -904,18 +1624,67 @@ const POSPage = () => {
                   </button>
                 </div>
                 
-                {/* Search */}
-                <div className="mt-4">
+                {/* Search and Date Filters */}
+                <div className="mt-4 space-y-3">
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
                     <input
                       type="text"
-                      placeholder="Search transactions by receipt number, customer name, or date..."
+                      placeholder="Search transactions by receipt number or customer name..."
                       value={transactionSearchTerm}
                       onChange={(e) => setTransactionSearchTerm(e.target.value)}
                       className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
                     />
                   </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Date From</label>
+                      <input
+                        type="date"
+                        value={transactionDateFrom}
+                        onChange={(e) => setTransactionDateFrom(e.target.value)}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Date To</label>
+                      <input
+                        type="date"
+                        value={transactionDateTo}
+                        onChange={(e) => setTransactionDateTo(e.target.value)}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Items per page</label>
+                      <select
+                        value={transactionPageSize}
+                        onChange={(e) => {
+                          setTransactionPageSize(Number(e.target.value));
+                          setTransactionPage(1);
+                        }}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 bg-white"
+                      >
+                        {[10, 20, 50, 100].map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  {(transactionSearchTerm || transactionDateFrom || transactionDateTo) && (
+                    <div className="flex justify-end">
+                      <button
+                        onClick={() => {
+                          setTransactionSearchTerm('');
+                          setTransactionDateFrom('');
+                          setTransactionDateTo('');
+                          setTransactionPage(1);
+                          setTransactionPageInput('');
+                        }}
+                        className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl transition-colors"
+                      >
+                        Clear Filters
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -926,23 +1695,22 @@ const POSPage = () => {
                     <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-200 border-t-blue-600 mx-auto mb-4"></div>
                     <p className="text-gray-600">Loading transactions...</p>
                   </div>
-                ) : transactions.length === 0 ? (
+                ) : filteredTransactions.length === 0 ? (
                   <div className="text-center py-12">
                     <div className="w-16 h-16 bg-gradient-to-br from-gray-100 to-gray-200 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
                       <Receipt className="w-8 h-8 text-gray-400" />
                     </div>
                     <p className="text-gray-600 text-lg font-semibold mb-2">No Transactions Found</p>
-                    <p className="text-gray-500">Start making sales to see transaction history here.</p>
+                    <p className="text-gray-500">
+                      {transactions.length === 0 
+                        ? 'Start making sales to see transaction history here.'
+                        : 'No transactions match your filters.'}
+                    </p>
                   </div>
                 ) : (
-                  <div className="space-y-4">
-                    {transactions
-                      .filter(transaction => 
-                        transaction.sale_number.toLowerCase().includes(transactionSearchTerm.toLowerCase()) ||
-                        (transaction.customer_name && transaction.customer_name.toLowerCase().includes(transactionSearchTerm.toLowerCase())) ||
-                        new Date(transaction.created_at).toLocaleDateString().includes(transactionSearchTerm)
-                      )
-                      .map(transaction => (
+                  <>
+                    <div className="space-y-4">
+                      {paginatedTransactions.map(transaction => (
                         <div key={transaction.id} className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-4 border border-blue-200 shadow-sm hover:shadow-md transition-shadow">
                           <div className="flex items-center justify-between mb-3">
                             <div className="flex items-center space-x-3">
@@ -1019,7 +1787,17 @@ const POSPage = () => {
                                 onClick={() => {
                                   // Print individual receipt
                                   const printWindow = window.open('', '_blank');
-                                  const htmlContent = '<html><head><title>Receipt - ' + transaction.sale_number + '</title><style>body { font-family: monospace; font-size: 12px; margin: 0; padding: 20px; } .header { text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; } .item { display: flex; justify-content: space-between; margin-bottom: 5px; } .total { border-top: 1px solid #000; padding-top: 10px; margin-top: 10px; font-weight: bold; } .footer { text-align: center; margin-top: 20px; font-size: 10px; }</style></head><body><div class="header"><h2>PHOEBE DRUGSTORE</h2><p>Receipt #: ' + transaction.sale_number + '</p><p>Date: ' + new Date(transaction.created_at).toLocaleString() + '</p>' + (transaction.customer_name ? '<p>Customer: ' + transaction.customer_name + '</p>' : '') + '</div><div class="items">' + (transaction.items?.map(item => '<div class="item"><span>' + (item.name || '') + ' x' + item.quantity + '</span><span>₱' + parseFloat(item.total_price).toFixed(2) + '</span></div>').join('') || '') + '</div><div class="total"><div class="item"><span>Subtotal:</span><span>₱' + parseFloat(transaction.subtotal).toFixed(2) + '</span></div>' + (transaction.discount_amount > 0 ? '<div class="item"><span>Discount:</span><span>-₱' + parseFloat(transaction.discount_amount).toFixed(2) + '</span></div>' : '') + '<div class="item"><span>TOTAL:</span><span>₱' + parseFloat(transaction.total_amount).toFixed(2) + '</span></div><div class="item"><span>Payment: ' + String(transaction.payment_method || '').toUpperCase() + '</span><span></span></div></div><div class="footer"><p>Thank you for your purchase!</p><p>Visit us again soon!</p></div></body></html>';
+                                  const htmlContent = generateReceiptHTML({
+                                    sale_number: transaction.sale_number,
+                                    created_at: transaction.created_at,
+                                    customer_name: transaction.customer_name,
+                                    items: transaction.items || [],
+                                    subtotal: transaction.subtotal,
+                                    discount_amount: transaction.discount_amount || 0,
+                                    discount_type: transaction.discount_type || '',
+                                    total_amount: transaction.total_amount,
+                                    payment_method: transaction.payment_method
+                                  }, pharmacy);
                                   printWindow.document.write(htmlContent);
                                   printWindow.document.close();
                                   printWindow.print();
@@ -1033,7 +1811,73 @@ const POSPage = () => {
                           </div>
                         </div>
                       ))}
-                  </div>
+                    </div>
+                    
+                    {/* Pagination Controls */}
+                    {transactionTotalPages > 1 && (
+                      <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mt-4 pt-4 border-t border-gray-200">
+                        {/* Left: Total */}
+                        <div className="text-sm text-gray-700 order-1 sm:order-1">
+                          Total Items: <span className="font-semibold">{filteredTransactions.length}</span>
+                        </div>
+                        {/* Center: Compact paginator */}
+                        <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-full px-2 py-1 shadow-sm order-2 sm:order-2">
+                          <button
+                            aria-label="Previous page"
+                            onClick={() => goToTransactionPage(transactionCurrentPage - 1)}
+                            disabled={transactionCurrentPage === 1}
+                            className={`w-8 h-8 inline-flex items-center justify-center rounded-full text-sm transition-colors ${transactionCurrentPage === 1 ? 'opacity-40 cursor-not-allowed text-gray-400' : 'hover:bg-gray-50 text-gray-700'}`}
+                            title="Previous"
+                          >
+                            ‹
+                          </button>
+                          {getCompactRange(transactionCurrentPage, transactionTotalPages).map((num) => (
+                            <button
+                              key={num}
+                              onClick={() => goToTransactionPage(num)}
+                              className={`w-8 h-8 inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors ${
+                                num === transactionCurrentPage ? 'bg-indigo-600 text-white shadow-sm' : 'border border-gray-300 text-gray-700 hover:bg-gray-50'
+                              }`}
+                            >
+                              {num}
+                            </button>
+                          ))}
+                          <button
+                            aria-label="Next page"
+                            onClick={() => goToTransactionPage(transactionCurrentPage + 1)}
+                            disabled={transactionCurrentPage === transactionTotalPages}
+                            className={`w-8 h-8 inline-flex items-center justify-center rounded-full text-sm transition-colors ${transactionCurrentPage === transactionTotalPages ? 'opacity-40 cursor-not-allowed text-gray-400' : 'hover:bg-gray-50 text-gray-700'}`}
+                            title="Next"
+                          >
+                            ›
+                          </button>
+                        </div>
+                        {/* Right: Go to page */}
+                        <div className="flex items-center gap-2 text-sm text-gray-700 order-3 sm:order-3 flex-wrap justify-center sm:justify-start">
+                          <span className="whitespace-nowrap">Go to page:</span>
+                          <form onSubmit={handleTransactionPageInputSubmit} className="flex items-center gap-2">
+                            <input
+                              aria-label="Go to page number"
+                              type="number"
+                              min="1"
+                              max={transactionTotalPages}
+                              value={transactionPageInput}
+                              onChange={handleTransactionPageInputChange}
+                              placeholder={`${transactionCurrentPage}`}
+                              className="w-16 px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-center"
+                            />
+                            <span className="text-sm text-gray-600 whitespace-nowrap">of {transactionTotalPages}</span>
+                            <button
+                              type="submit"
+                              className="px-3 py-1.5 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 text-xs font-medium transition-colors"
+                            >
+                              Go
+                            </button>
+                          </form>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>

@@ -24,3 +24,10 @@ services:
     healthCheckPath: /api/health
     plan: standard  # Recommended: 2GB RAM for ML models
 
+
+
+
+
+
+
+

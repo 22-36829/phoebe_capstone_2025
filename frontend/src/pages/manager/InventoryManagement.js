@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Package, AlertTriangle, CheckCircle, Clock, Plus, ChevronDown, Loader2, Trash2, Pencil, Layers, Building2, Search, Printer, FileText, Users, BarChart3, AlertCircle, CheckCircle2, XCircle } from 'lucide-react';
+import { Package, AlertTriangle, CheckCircle, Clock, Plus, ChevronDown, Loader2, Trash2, Pencil, Layers, Building2, Search, Printer, FileText, Users, BarChart3, AlertCircle, CheckCircle2, XCircle, X } from 'lucide-react';
 import { InventoryAPI, POSAPI, ManagerAPI } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -39,12 +39,12 @@ const InventoryManagement = () => {
   const [editNewCategoryName, setEditNewCategoryName] = useState('');
 
   // Tabs
-  const [tab, setTab] = useState('inventory'); // inventory | reorder | requests | returns
+  const [tab, setTab] = useState('inventory'); // inventory | reorder | requests | returns | suppliers
 
-  // Pagination
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(12);
-  const [pageInput, setPageInput] = useState('');
+  // Inventory Pagination (separate from other tabs)
+  const [inventoryPage, setInventoryPage] = useState(1);
+  const [inventoryPageSize, setInventoryPageSize] = useState(12);
+  const [inventoryPageInput, setInventoryPageInput] = useState('');
 
   // Returns data
   const [returnedItems, setReturnedItems] = useState([]);
@@ -92,6 +92,21 @@ const InventoryManagement = () => {
   const [reorderCategory, setReorderCategory] = useState('');
   const [reorderOnlyLow, setReorderOnlyLow] = useState(true);
   const [reorderPlan, setReorderPlan] = useState({}); // { [productId]: number }
+  const [reorderStatusFilter, setReorderStatusFilter] = useState('all'); // all | requested | not_requested
+  const [selectedItems, setSelectedItems] = useState(new Set()); // Set of product IDs
+  const [showAddToReorder, setShowAddToReorder] = useState(false); // Modal for adding products to reorder
+  const [addToReorderSearch, setAddToReorderSearch] = useState(''); // Search for products to add
+  const [showSupplierModal, setShowSupplierModal] = useState(false); // Modal for supplier selection
+  const [purchaseOrders, setPurchaseOrders] = useState([]); // Purchase orders list
+  const [showAddSupplier, setShowAddSupplier] = useState(false); // Modal for adding supplier
+  const [editingSupplier, setEditingSupplier] = useState(null); // Supplier being edited
+  const [supplierForm, setSupplierForm] = useState({ name: '', contact_name: '', email: '', phone: '', address: '', lead_time_days: 7, is_active: true });
+  const [supplierFormErrors, setSupplierFormErrors] = useState({}); // Validation errors for supplier form
+  const [supplierSearch, setSupplierSearch] = useState(''); // Search query for suppliers
+  const [supplierStatusFilter, setSupplierStatusFilter] = useState('all'); // all | active | inactive
+  const [supplierPage, setSupplierPage] = useState(1); // Current page for suppliers
+  const [supplierPageSize, setSupplierPageSize] = useState(10); // Items per page for suppliers
+  const [supplierPageInput, setSupplierPageInput] = useState(''); // Input for direct page navigation
 
   const isManager = user && (user.role === 'manager' || user.role === 'admin');
   const requestsRef = useRef(null);
@@ -178,8 +193,10 @@ const InventoryManagement = () => {
     try {
       setLoading(true);
       setError('');
+      // Load filtered requests for the requests tab
       const data = await InventoryAPI.listRequests(statusFilter ? { status: statusFilter } : {}, token);
       setRequests(data.requests || []);
+      
     } catch (e) {
       setError(e.message || 'Failed to load requests');
     } finally {
@@ -228,6 +245,17 @@ const InventoryManagement = () => {
       if (res && res.success) setSuppliers(res.suppliers || []);
     } catch (e) {
       setError(e.message || 'Failed to load suppliers');
+    }
+  };
+
+  const loadPurchaseOrders = async () => {
+    try {
+      const res = await ManagerAPI.listPurchaseOrders(token);
+      if (res && res.success) {
+        setPurchaseOrders(res.purchase_orders || []);
+      }
+    } catch (e) {
+      setError(e.message || 'Failed to load purchase orders');
     }
   };
 
@@ -701,9 +729,17 @@ const InventoryManagement = () => {
 
   // Filter deliveries based on search
   const filteredDeliveries = useMemo(() => {
-    if (!deliverySearch.trim()) return deliveries;
+    // First filter out fully disposed batches (no available quantity and has disposed items)
+    const activeDeliveries = deliveries.filter(delivery => {
+      const isFullyDisposed = (delivery.available_quantity === 0 || delivery.available_quantity === null) && 
+                              (delivery.disposed_quantity > 0);
+      return !isFullyDisposed;
+    });
+    
+    // Then apply search filter if provided
+    if (!deliverySearch.trim()) return activeDeliveries;
     const search = deliverySearch.toLowerCase();
-    return deliveries.filter(delivery => 
+    return activeDeliveries.filter(delivery => 
       delivery.supplier_name?.toLowerCase().includes(search) ||
       delivery.expiration_date?.includes(search) ||
       delivery.delivery_date?.includes(search) ||
@@ -746,6 +782,61 @@ const InventoryManagement = () => {
     setReportData([]); // Clear previous report data
   }, [reportType]);
 
+  // Load purchase orders when reorder tab is selected
+  useEffect(() => {
+    if (tab === 'reorder' && token) {
+      loadPurchaseOrders();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, token]);
+
+  // Load suppliers when suppliers tab is selected
+  useEffect(() => {
+    if (tab === 'suppliers' && token) {
+      loadSuppliers();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, token]);
+
+  // Reset supplier page when filters change
+  useEffect(() => {
+    setSupplierPage(1);
+    setSupplierPageInput('');
+  }, [supplierSearch, supplierStatusFilter]);
+
+  // Filtered and paginated suppliers
+  const filteredSuppliers = useMemo(() => {
+    let filtered = [...suppliers];
+    
+    // Search filter
+    const searchLower = supplierSearch.trim().toLowerCase();
+    if (searchLower) {
+      filtered = filtered.filter(s => 
+        (s.name || '').toLowerCase().includes(searchLower) ||
+        (s.contact_name || '').toLowerCase().includes(searchLower) ||
+        (s.email || '').toLowerCase().includes(searchLower) ||
+        (s.phone || '').toLowerCase().includes(searchLower) ||
+        (s.address || '').toLowerCase().includes(searchLower)
+      );
+    }
+    
+    // Status filter
+    if (supplierStatusFilter === 'active') {
+      filtered = filtered.filter(s => s.is_active !== false);
+    } else if (supplierStatusFilter === 'inactive') {
+      filtered = filtered.filter(s => s.is_active === false);
+    }
+    
+    return filtered;
+  }, [suppliers, supplierSearch, supplierStatusFilter]);
+
+  // Supplier pagination calculations
+  const supplierTotalPages = Math.max(1, Math.ceil(filteredSuppliers.length / supplierPageSize));
+  const supplierCurrentPage = Math.min(supplierPage, supplierTotalPages);
+  const supplierStartIndex = (supplierCurrentPage - 1) * supplierPageSize;
+  const supplierEndIndex = Math.min(supplierStartIndex + supplierPageSize, filteredSuppliers.length);
+  const paginatedSuppliers = filteredSuppliers.slice(supplierStartIndex, supplierEndIndex);
+
   // Handle keyboard shortcuts for inline editing
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -786,8 +877,13 @@ const InventoryManagement = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  // Reset to first page when filters/search change or products change
-  useEffect(() => { setPage(1); setPageInput(''); }, [prodQuery, categoryFilter, products]);
+  // Reset to first page when filters/search change or products change (only for inventory tab)
+  useEffect(() => { 
+    if (tab === 'inventory') {
+      setInventoryPage(1); 
+      setInventoryPageInput(''); 
+    }
+  }, [prodQuery, categoryFilter, products, tab]);
 
   const openEdit = (p) => {
     setEditProduct(p);
@@ -891,16 +987,16 @@ const InventoryManagement = () => {
 
   // Pagination calculations
   const total = filteredProducts.length;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const current = Math.min(page, totalPages);
-  const startIndex = (current - 1) * pageSize;
-  const endIndex = Math.min(startIndex + pageSize, total);
+  const totalPages = Math.max(1, Math.ceil(total / inventoryPageSize));
+  const current = Math.min(inventoryPage, totalPages);
+  const startIndex = (current - 1) * inventoryPageSize;
+  const endIndex = Math.min(startIndex + inventoryPageSize, total);
   const pagedProducts = filteredProducts.slice(startIndex, endIndex);
   // eslint-disable-next-line no-unused-vars
   const showFirstLast = totalPages > 7;
 
   // Clear page input when page changes externally
-  useEffect(() => { setPageInput(''); }, [page]);
+  useEffect(() => { setInventoryPageInput(''); }, [inventoryPage]);
 
 
   const pendingCount = useMemo(() => requests.filter(r => r.status === 'pending').length, [requests]);
@@ -908,22 +1004,367 @@ const InventoryManagement = () => {
   // Low stock + reorder computed list
   const lowStockList = useMemo(() => {
     const q = reorderQuery.trim().toLowerCase();
-    return filteredProducts
+    
+    // Create a map of product_id to purchase order status
+    const productPOStatus = {};
+    
+    purchaseOrders.forEach(po => {
+      if (po.items && Array.isArray(po.items)) {
+        po.items.forEach(item => {
+          const productId = Number(item.product_id);
+          if (!productId || isNaN(productId)) return;
+          if (!productPOStatus[productId]) {
+            productPOStatus[productId] = [];
+          }
+          productPOStatus[productId].push({
+            po_id: po.id,
+            po_number: po.po_number,
+            status: po.status,
+            quantity: item.quantity,
+            created_at: po.created_at,
+            expected_delivery_at: po.expected_delivery_at,
+            supplier_name: po.supplier_name
+          });
+        });
+      }
+    });
+    
+    // Get products that are manually added to reorder plan (even if not low stock)
+    const manuallyAddedProductIds = new Set(Object.keys(reorderPlan).map(id => Number(id)));
+    
+    // Use products array directly (not filteredProducts) to avoid inventory tab filters affecting reorder tab
+    const allProductsForReorder = products.filter(p => {
+      const matchesQ = !q || [p.name, p.category_name, p.location].filter(Boolean).some(v => String(v).toLowerCase().includes(q));
+      const matchesCat = !reorderCategory || p.category_name === reorderCategory;
+      const current = Number(p.current_stock ?? 0);
+      const reorderPoint = Number(p.reorder_point ?? 10);
+      const isLow = current <= reorderPoint || current <= 5;
+      const isManuallyAdded = manuallyAddedProductIds.has(Number(p.id));
+      
+      // Include if: matches filters AND (is low stock OR manually added OR not filtering by low stock)
+      return matchesQ && matchesCat && (!reorderOnlyLow || isLow || isManuallyAdded);
+    });
+    
+    // Also include products that are manually added but might not be in the filtered list
+    const manuallyAddedProducts = products.filter(p => {
+      if (!manuallyAddedProductIds.has(Number(p.id))) return false;
+      // Check if already in allProductsForReorder
+      if (allProductsForReorder.some(ap => Number(ap.id) === Number(p.id))) return false;
+      
+      const matchesQ = !q || [p.name, p.category_name, p.location].filter(Boolean).some(v => String(v).toLowerCase().includes(q));
+      const matchesCat = !reorderCategory || p.category_name === reorderCategory;
+      return matchesQ && matchesCat;
+    });
+    
+    // Combine both lists
+    const combinedProducts = [...allProductsForReorder, ...manuallyAddedProducts];
+    
+    return combinedProducts
       .filter(p => {
-        const matchesQ = !q || [p.name, p.category_name, p.location].filter(Boolean).some(v => String(v).toLowerCase().includes(q));
-        const matchesCat = !reorderCategory || p.category_name === reorderCategory;
-        const current = Number(p.current_stock ?? 0);
-        const reorderPoint = Number(p.reorder_point ?? 10);
-        const isLow = current <= reorderPoint || current <= 5;
-        return matchesQ && matchesCat && (!reorderOnlyLow || isLow);
+        // Check purchase order status
+        // Convert product id to number for consistent matching
+        const productId = Number(p.id);
+        const productPOs = productPOStatus[productId] || [];
+        const hasOrdered = productPOs.some(po => po.status === 'ordered');
+        const hasReceived = productPOs.some(po => po.status === 'received');
+        const hasRequested = hasOrdered || hasReceived;
+        
+        // Apply status filter
+        let matchesStatus = true;
+        if (reorderStatusFilter === 'requested') {
+          matchesStatus = hasRequested;
+        } else if (reorderStatusFilter === 'not_requested') {
+          matchesStatus = !hasRequested;
+        }
+        
+        return matchesStatus;
       })
       .map(p => {
         const current = Number(p.current_stock ?? 0);
         const reorderPoint = Number(p.reorder_point ?? 10);
-        const suggested = Math.max(0, reorderPoint * 2 - current);
-        return { ...p, reorder_point: reorderPoint, suggested };
+        const suggested = Math.max(1, reorderPoint * 2 - current); // Minimum 1 to prevent 0 quantity
+        
+        // Determine purchase order status and get PO info
+        // Convert product id to number for consistent matching
+        const productId = Number(p.id);
+        const productPOs = productPOStatus[productId] || [];
+        const orderedPO = productPOs.find(po => po.status === 'ordered');
+        const receivedPO = productPOs.find(po => po.status === 'received');
+        const hasOrdered = !!orderedPO;
+        const hasReceived = !!receivedPO;
+        let deliveryStatus = 'not_requested';
+        let poId = null;
+        let poNumber = null;
+        let requestDate = null;
+        let orderedQuantity = null;
+        if (hasOrdered) {
+          deliveryStatus = 'ordered';
+          poId = orderedPO.po_id;
+          poNumber = orderedPO.po_number;
+          requestDate = orderedPO.created_at;
+          orderedQuantity = orderedPO.quantity;
+        } else if (hasReceived) {
+          deliveryStatus = 'received';
+          poId = receivedPO.po_id;
+          poNumber = receivedPO.po_number;
+          requestDate = receivedPO.created_at;
+          orderedQuantity = receivedPO.quantity;
+        }
+        
+        return { 
+          ...p, 
+          reorder_point: reorderPoint, 
+          suggested,
+          delivery_status: deliveryStatus,
+          po_id: poId,
+          po_number: poNumber,
+          request_date: requestDate,
+          ordered_quantity: orderedQuantity
+        };
       });
-  }, [filteredProducts, reorderQuery, reorderCategory, reorderOnlyLow]);
+  }, [products, reorderQuery, reorderCategory, reorderOnlyLow, reorderStatusFilter, purchaseOrders, reorderPlan]);
+
+  // Handle checkbox selection
+  const toggleItemSelection = (productId) => {
+    setSelectedItems(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(productId)) {
+        newSet.delete(productId);
+      } else {
+        newSet.add(productId);
+      }
+      return newSet;
+    });
+  };
+
+  const selectAllItems = () => {
+    if (selectedItems.size === lowStockList.length) {
+      setSelectedItems(new Set());
+    } else {
+      setSelectedItems(new Set(lowStockList.map(p => p.id)));
+    }
+  };
+
+  // Handle bulk print for selected items
+  const printSelectedItems = () => {
+    // Validation: Check if items are selected
+    if (selectedItems.size === 0) {
+      setError('Please select at least one item to print');
+      return;
+    }
+    
+    // Confirmation dialog
+    if (!window.confirm(`Print ${selectedItems.size} selected item(s)?`)) {
+      return;
+    }
+    
+    const selectedProducts = lowStockList.filter(p => selectedItems.has(p.id));
+    const today = new Date().toLocaleString();
+    const printWindow = window.open('', '_blank');
+    const rows = selectedProducts.map(p => `<tr>
+      <td>${p.name||''}</td>
+      <td>${p.category_name||''}</td>
+      <td style='text-align:right;'>${p.current_stock??0}</td>
+      <td style='text-align:right;'>${reorderPlan[p.id] ?? p.suggested}</td>
+    </tr>`).join('');
+    const html = `<html><head><title>Reorder Planner</title><style>body{font-family:Arial;margin:20px} table{width:100%;border-collapse:collapse} th,td{border:1px solid #ddd;padding:8px} th{background:#f5f5f5}</style></head><body><h2>Low Stock & Reorder Planner</h2><p>Generated: ${today}</p><table><thead><tr><th>Product</th><th>Category</th><th>Current Stock</th><th>Order Qty</th></tr></thead><tbody>${rows||'<tr><td colspan=4 style="text-align:center;color:#666;">No items</td></tr>'}</tbody></table></body></html>`;
+    printWindow.document.write(html); 
+    printWindow.document.close(); 
+    printWindow.print();
+  };
+
+  // Handle bulk request for selected items - now creates purchase orders
+  const requestSelectedItems = async () => {
+    // Validation: Check if items are selected
+    if (selectedItems.size === 0) {
+      setError('Please select at least one item to order');
+      return;
+    }
+    
+    const selectedProducts = lowStockList.filter(p => selectedItems.has(p.id));
+    
+    // Validate quantities before creating purchase order
+    const invalidProducts = [];
+    const validItems = [];
+    
+    for (const product of selectedProducts) {
+      const quantity = reorderPlan[product.id] ?? product.suggested;
+      if (!quantity || quantity <= 0 || isNaN(quantity)) {
+        invalidProducts.push(product.name);
+      } else {
+        validItems.push({ 
+          product, 
+          quantity,
+          unit_cost: product.cost_price || 0
+        });
+      }
+    }
+    
+    // Show error if any products have invalid quantities
+    if (invalidProducts.length > 0) {
+      setError(`Cannot create order with 0 or invalid quantity for: ${invalidProducts.join(', ')}`);
+      return;
+    }
+    
+    // Check if there are any valid items to create
+    if (validItems.length === 0) {
+      setError('Please enter valid quantities (greater than 0) for the selected items');
+      return;
+    }
+    
+    // Load suppliers if not already loaded
+    if (suppliers.length === 0) {
+      try {
+        const res = await ManagerAPI.listSuppliers(token);
+        if (res && res.success) {
+          const loadedSuppliers = res.suppliers || [];
+          if (loadedSuppliers.length === 0) {
+            setError('No suppliers available. Please add suppliers first.');
+            return;
+          }
+          setSuppliers(loadedSuppliers);
+        } else {
+          setError('Failed to load suppliers. Please try again.');
+          return;
+        }
+      } catch (e) {
+        setError('Failed to load suppliers. Please try again.');
+        return;
+      }
+    }
+    
+    // Show supplier selection modal
+    setShowSupplierModal(true);
+    // Store valid items for later use
+    window._pendingPOItems = validItems;
+  };
+
+  // Create purchase order after supplier selection
+  const createPurchaseOrder = async (supplierId) => {
+    if (!window._pendingPOItems || window._pendingPOItems.length === 0) {
+      setError('No items to order');
+      return;
+    }
+    
+    const validItems = window._pendingPOItems;
+    const productList = validItems.map(({ product, quantity }) => `  • ${product.name}: ${quantity} units`).join('\n');
+    const confirmMsg = `Create purchase order for ${validItems.length} item(s)?\n\n${productList}\n\nAre you sure you want to proceed?`;
+    if (!window.confirm(confirmMsg)) {
+      return;
+    }
+    
+    try {
+      setLoading(true);
+      setError('');
+      setShowSupplierModal(false);
+      
+      // Prepare items for purchase order
+      const items = validItems.map(({ product, quantity, unit_cost }) => ({
+        product_id: product.id,
+        quantity: quantity,
+        unit_cost: unit_cost
+      }));
+      
+      // Create purchase order
+      const response = await ManagerAPI.createPurchaseOrder({
+        supplier_id: supplierId,
+        items: items
+      }, token);
+      
+      if (response.success) {
+        setSuccess(`Purchase order ${response.po_number} created successfully`);
+        setTimeout(() => setSuccess(''), 3000);
+        setSelectedItems(new Set());
+        setReorderPlan({});
+        // Reload products to update status
+        await loadProducts();
+        // Reload purchase orders to update delivery status
+        await loadPurchaseOrders();
+      } else {
+        setError(response.error || 'Failed to create purchase order');
+      }
+    } catch (e) {
+      setError(e.message || 'Failed to create purchase order');
+    } finally {
+      setLoading(false);
+      window._pendingPOItems = null;
+    }
+  };
+
+  // Handle edit purchase order (update quantity for a specific product in PO)
+  const handleEditPO = async (product) => {
+    if (!product.po_id || !product.po_number) return;
+    
+    const newQuantity = prompt(`Edit order quantity for ${product.name}:\nCurrent: ${product.ordered_quantity}\nEnter new quantity (must be greater than 0):`, product.ordered_quantity);
+    
+    if (newQuantity === null) return; // User cancelled
+    
+    const quantity = Number(newQuantity);
+    if (isNaN(quantity) || quantity <= 0) {
+      setError('Quantity must be greater than 0');
+      return;
+    }
+
+    const confirmMsg = `Are you sure you want to update the order quantity for ${product.name}?\n\nNew Quantity: ${quantity}\nPO: ${product.po_number}\nDate Ordered: ${product.request_date ? new Date(product.request_date).toLocaleString() : 'N/A'}`;
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      setLoading(true);
+      setError('');
+      
+      // Get the purchase order to update the item
+      const response = await ManagerAPI.updatePurchaseOrder(product.po_id, {
+        items: [{
+          product_id: product.id,
+          quantity: quantity
+        }]
+      }, token);
+      
+      if (response.success) {
+        setSuccess('Order quantity updated successfully');
+        setTimeout(() => setSuccess(''), 2000);
+        await loadPurchaseOrders();
+        await loadProducts();
+      } else {
+        setError(response.error || 'Failed to update order');
+      }
+    } catch (e) {
+      setError(e.message || 'Failed to update order');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handle cancel purchase order
+  const handleCancelPO = async (product) => {
+    if (!product.po_id || !product.po_number) return;
+    
+    const confirmMsg = `Are you sure you want to cancel the purchase order for ${product.name}?\n\nPO: ${product.po_number}\nThis action cannot be undone.`;
+    if (!window.confirm(confirmMsg)) return;
+    
+    try {
+      setLoading(true);
+      setError('');
+      
+      // Cancel the purchase order by setting status to cancelled
+      const response = await ManagerAPI.updatePurchaseOrder(product.po_id, {
+        status: 'cancelled'
+      }, token);
+      
+      if (response.success) {
+        setSuccess('Purchase order cancelled successfully');
+        setTimeout(() => setSuccess(''), 2000);
+        await loadPurchaseOrders();
+        await loadProducts();
+      } else {
+        setError(response.error || 'Failed to cancel order');
+      }
+    } catch (e) {
+      setError(e.message || 'Failed to cancel order');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const downloadCSV = (filename, rows) => {
     const processValue = (v) => {
@@ -983,21 +1424,21 @@ const InventoryManagement = () => {
 
   const goToPage = (pageNum) => {
     const clamped = Math.max(1, Math.min(totalPages, Number(pageNum)));
-    if (!Number.isNaN(clamped)) setPage(clamped);
+    if (!Number.isNaN(clamped)) setInventoryPage(clamped);
   };
 
   const handlePageInputChange = (e) => {
-    setPageInput(e.target.value);
+    setInventoryPageInput(e.target.value);
   };
 
   const handlePageInputSubmit = (e) => {
     e.preventDefault();
-    const pageNum = parseInt(pageInput, 10);
+    const pageNum = parseInt(inventoryPageInput, 10);
     if (!Number.isNaN(pageNum)) {
       const clamped = Math.max(1, Math.min(totalPages, pageNum));
-      setPage(clamped);
+      setInventoryPage(clamped);
     }
-    setPageInput('');
+    setInventoryPageInput('');
   };
 
   // Common pagination range generator (with ellipses)
@@ -1205,44 +1646,20 @@ const InventoryManagement = () => {
                   <XCircle className="w-4 h-4" />
                   Returns
                 </button>
+                
+                <button 
+                  onClick={() => setTab('suppliers')} 
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 ${
+                    tab === 'suppliers' 
+                      ? 'bg-blue-600 text-white shadow-sm' 
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  <Building2 className="w-4 h-4" />
+                  Suppliers
+                </button>
               </div>
               
-              <div className="flex items-center space-x-3">
-                {tab === 'inventory' && (
-                  <div className="flex items-center gap-1">
-                    <button 
-                      onClick={() => setStatusView('active')} 
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                        statusView === 'active' 
-                          ? 'bg-blue-600 text-white shadow-sm' 
-                          : 'border border-gray-300 text-gray-600 hover:bg-gray-50'
-                      }`}
-                    >
-                      Active
-                    </button>
-                    <button 
-                      onClick={() => setStatusView('inactive')} 
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                        statusView === 'inactive' 
-                          ? 'bg-blue-600 text-white shadow-sm' 
-                          : 'border border-gray-300 text-gray-600 hover:bg-gray-50'
-                      }`}
-                    >
-                      Inactive
-                    </button>
-                    <button 
-                      onClick={() => setStatusView('all')} 
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                        statusView === 'all' 
-                          ? 'bg-blue-600 text-white shadow-sm' 
-                          : 'border border-gray-300 text-gray-600 hover:bg-gray-50'
-                      }`}
-                    >
-                      All
-                    </button>
-                  </div>
-                )}
-              </div>
             </div>
           </div>
         </div>
@@ -1253,7 +1670,7 @@ const InventoryManagement = () => {
           {/* Compact Inventory Controls */}
           <div className="bg-white rounded-lg p-3 shadow-sm border border-gray-200 mb-3">
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-              <div className="md:col-span-6">
+              <div className="md:col-span-5">
                 <label className="block text-sm font-medium text-gray-700 mb-1">Search Products</label>
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
@@ -1266,7 +1683,7 @@ const InventoryManagement = () => {
                   />
                 </div>
               </div>
-              <div className="md:col-span-3">
+              <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
                 <div className="relative">
                   <select 
@@ -1283,11 +1700,26 @@ const InventoryManagement = () => {
                 </div>
               </div>
               <div className="md:col-span-3">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                <div className="relative">
+                  <select 
+                    value={statusView} 
+                    onChange={(e) => setStatusView(e.target.value)} 
+                    className="w-full appearance-none px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+                  >
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                    <option value="all">All</option>
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-gray-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+              </div>
+              <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-gray-700 mb-1">Items per page</label>
                 <div className="relative">
                   <select 
-                    value={pageSize} 
-                    onChange={(e) => setPageSize(Number(e.target.value))} 
+                    value={inventoryPageSize} 
+                    onChange={(e) => setInventoryPageSize(Number(e.target.value))} 
                     className="w-full appearance-none px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
                   >
                     {[10, 20, 50, 100].map(s => <option key={s} value={s}>{s}</option>)}
@@ -1438,7 +1870,7 @@ const InventoryManagement = () => {
                           type="number"
                           min="1"
                           max={totalPages}
-                          value={pageInput}
+                          value={inventoryPageInput}
                           onChange={handlePageInputChange}
                           placeholder={`${current}`}
                           className="w-16 px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-center"
@@ -1469,40 +1901,88 @@ const InventoryManagement = () => {
           </div>
           <div className="p-4">
             {/* Filters */}
-            <div className="bg-gray-50 border border-gray-200 rounded-lg p-2 mb-3">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2">
-                <input value={reorderQuery} onChange={(e)=>setReorderQuery(e.target.value)} placeholder="Search products" className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-transparent" />
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+                <input value={reorderQuery} onChange={(e)=>setReorderQuery(e.target.value)} placeholder="Search products" className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-transparent" />
                 <div className="relative">
-                  <select value={reorderCategory} onChange={(e)=>setReorderCategory(e.target.value)} className="w-full appearance-none px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-transparent pr-8">
+                  <select value={reorderCategory} onChange={(e)=>setReorderCategory(e.target.value)} className="w-full appearance-none px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-transparent pr-8 bg-white">
                     <option value="">All Categories</option>
                     {categoryNames.filter(Boolean).map(c => (<option key={c} value={c}>{c}</option>))}
                   </select>
                   <ChevronDown className="w-4 h-4 text-gray-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                 </div>
-                <label className="inline-flex items-center gap-2 px-2 py-1.5 text-sm border border-gray-300 rounded-md bg-white">
-                  <input type="checkbox" checked={reorderOnlyLow} onChange={(e)=>setReorderOnlyLow(e.target.checked)} />
-                  Only low stock
+                <div className="relative">
+                  <select value={reorderStatusFilter} onChange={(e)=>setReorderStatusFilter(e.target.value)} className="w-full appearance-none px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-transparent pr-8 bg-white">
+                    <option value="all">All Status</option>
+                    <option value="requested">Requested</option>
+                    <option value="not_requested">Not Requested</option>
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-gray-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+                <label className="inline-flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-md bg-white cursor-pointer hover:bg-gray-50 transition-colors">
+                  <input type="checkbox" checked={reorderOnlyLow} onChange={(e)=>setReorderOnlyLow(e.target.checked)} className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" />
+                  <span>Only low stock</span>
                 </label>
-                <div className="flex gap-2 col-span-1 sm:col-span-2 lg:col-span-2 justify-end">
-                  <button onClick={()=>{setReorderQuery(''); setReorderCategory(''); setReorderOnlyLow(true); setReorderPlan({});}} className="px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50">Clear</button>
-                  <button onClick={()=>{
-                    const today = new Date().toLocaleString();
-                    const list = lowStockList;
-                    const printWindow = window.open('', '_blank');
-                    const rows = list.map(p => `<tr>
-                      <td>${p.name||''}</td>
-                      <td>${p.category_name||''}</td>
-                      <td style='text-align:right;'>${p.current_stock??0}</td>
-                      <td style='text-align:right;'>${reorderPlan[p.id] ?? p.suggested}</td>
-                    </tr>`).join('');
-                    const html = `<html><head><title>Reorder Planner</title><style>body{font-family:Arial;margin:20px} table{width:100%;border-collapse:collapse} th,td{border:1px solid #ddd;padding:8px} th{background:#f5f5f5}</style></head><body><h2>Low Stock & Reorder Planner</h2><p>Generated: ${today}</p><table><thead><tr><th>Product</th><th>Category</th><th>Current Stock</th><th>Order Qty</th></tr></thead><tbody>${rows||'<tr><td colspan=4 style="text-align:center;color:#666;">No items</td></tr>'}</tbody></table></body></html>`;
-                    printWindow.document.write(html); printWindow.document.close(); printWindow.print();
-                  }} className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700">Print</button>
-                  <button onClick={()=>{
-                    const header = ['Product','Category','Current Stock','Order Qty'];
-                    const body = lowStockList.map(p => [p.name||'', p.category_name||'', p.current_stock??0, (reorderPlan[p.id] ?? p.suggested)]);
-                    downloadCSV(`reorder_${new Date().toISOString().slice(0,10)}.csv`, [header, ...body]);
-                  }} className="px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50">Export CSV</button>
+              </div>
+              
+              {/* Action Buttons - Organized in groups */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-gray-200">
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => setShowAddToReorder(true)}
+                    className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 flex items-center gap-2 transition-colors shadow-sm"
+                    title="Add products to reorder list"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add Product</span>
+                  </button>
+                  <button 
+                    onClick={printSelectedItems} 
+                    disabled={selectedItems.size === 0}
+                    className="px-4 py-2 text-sm font-medium bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-colors shadow-sm"
+                    title={selectedItems.size === 0 ? 'Please select items to print' : `Print ${selectedItems.size} selected item(s)`}
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>Print</span>
+                    {selectedItems.size > 0 && <span className="bg-indigo-700 px-1.5 py-0.5 rounded text-xs">({selectedItems.size})</span>}
+                  </button>
+                  <button 
+                    onClick={requestSelectedItems} 
+                    disabled={loading || selectedItems.size === 0}
+                    className="px-4 py-2 text-sm font-medium bg-emerald-600 text-white rounded-md hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-colors shadow-sm"
+                    title={selectedItems.size === 0 ? 'Please select items to order' : `Create purchase order for ${selectedItems.size} selected item(s)`}
+                  >
+                    {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                    <span>Create Order</span>
+                    {selectedItems.size > 0 && <span className="bg-emerald-700 px-1.5 py-0.5 rounded text-xs">({selectedItems.size})</span>}
+                  </button>
+                </div>
+                
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={()=>{
+                      setReorderQuery(''); 
+                      setReorderCategory(''); 
+                      setReorderStatusFilter('all'); 
+                      setReorderOnlyLow(true); 
+                      setReorderPlan({}); 
+                      setSelectedItems(new Set());
+                    }} 
+                    className="px-4 py-2 text-sm font-medium border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                  >
+                    Clear
+                  </button>
+                  <button 
+                    onClick={()=>{
+                      const header = ['Product','Category','Current Stock','Order Qty'];
+                      const body = lowStockList.map(p => [p.name||'', p.category_name||'', p.current_stock??0, (reorderPlan[p.id] ?? p.suggested)]);
+                      downloadCSV(`reorder_${new Date().toISOString().slice(0,10)}.csv`, [header, ...body]);
+                    }} 
+                    className="px-4 py-2 text-sm font-medium border border-gray-300 rounded-md hover:bg-gray-50 transition-colors flex items-center gap-2"
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span>Export CSV</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -1512,30 +1992,128 @@ const InventoryManagement = () => {
               <table className="min-w-full text-sm">
                 <thead>
                   <tr className="text-left text-gray-600 bg-gray-50">
+                    <th className="py-2 px-3 w-12">
+                      <input 
+                        type="checkbox" 
+                        checked={selectedItems.size > 0 && selectedItems.size === lowStockList.length}
+                        onChange={selectAllItems}
+                        className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                    </th>
                     <th className="py-2 px-3">Product</th>
                     <th className="py-2 px-3">Category</th>
                     <th className="py-2 px-3">Current Stock</th>
+                    <th className="py-2 px-3">Delivery Status</th>
+                    <th className="py-2 px-3">Date Requested</th>
                     <th className="py-2 px-3">Order Qty</th>
                     <th className="py-2 px-3 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {lowStockList.map(p => (
-                    <tr key={p.id} className="border-t border-gray-100 hover:bg-gray-50">
+                    <tr key={p.id} className={`border-t border-gray-100 hover:bg-gray-50 ${selectedItems.has(p.id) ? 'bg-indigo-50' : ''}`}>
+                      <td className="py-2 px-3">
+                        <input 
+                          type="checkbox" 
+                          checked={selectedItems.has(p.id)}
+                          onChange={() => toggleItemSelection(p.id)}
+                          className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                        />
+                      </td>
                       <td className="py-2 px-3 font-medium text-gray-900">{p.name}</td>
                       <td className="py-2 px-3 text-gray-700">{p.category_name||'—'}</td>
                       <td className="py-2 px-3 text-gray-900">{p.current_stock??0}</td>
                       <td className="py-2 px-3">
-                        <input type="number" min={0} value={reorderPlan[p.id] ?? p.suggested} onChange={(e)=>setReorderPlan(plan=>({...plan,[p.id]: Number(e.target.value)}))} className="w-24 px-2 py-1 border border-gray-300 rounded-md text-sm" />
+                        {p.delivery_status === 'ordered' && (
+                          <span className="px-2 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-700 border border-blue-200">
+                            Ordered
+                          </span>
+                        )}
+                        {p.delivery_status === 'received' && (
+                          <span className="px-2 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700 border border-emerald-200">
+                            Received
+                          </span>
+                        )}
+                        {p.delivery_status === 'not_requested' && (
+                          <span className="px-2 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600 border border-gray-200">
+                            Not Ordered
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-gray-600 text-xs">
+                        {p.request_date ? new Date(p.request_date).toLocaleString() : '—'}
+                      </td>
+                      <td className="py-2 px-3">
+                        {p.delivery_status === 'ordered' || p.delivery_status === 'received' ? (
+                          <span className="font-medium text-gray-900">{p.ordered_quantity || '—'}</span>
+                        ) : (
+                          <input 
+                            type="number" 
+                            min={1} 
+                            value={reorderPlan[p.id] ?? p.suggested} 
+                            onChange={(e) => {
+                              const value = Number(e.target.value);
+                              if (value >= 1 || e.target.value === '') {
+                                setReorderPlan(plan => ({ ...plan, [p.id]: value || 0 }));
+                              }
+                            }}
+                            onBlur={(e) => {
+                              const value = Number(e.target.value);
+                              if (!value || value < 1) {
+                                // Reset to suggested if invalid
+                                setReorderPlan(plan => {
+                                  const newPlan = { ...plan };
+                                  if (p.suggested >= 1) {
+                                    newPlan[p.id] = p.suggested;
+                                  } else {
+                                    delete newPlan[p.id];
+                                  }
+                                  return newPlan;
+                                });
+                              }
+                            }}
+                            className="w-24 px-2 py-1 border border-gray-300 rounded-md text-sm" 
+                            placeholder="Qty"
+                          />
+                        )}
                       </td>
                       <td className="py-2 px-3 text-right">
-                        <button onClick={()=>setReorderPlan(plan=>{ const cp={...plan}; delete cp[p.id]; return cp; })} className="px-2 py-1 border border-rose-300 text-rose-600 rounded-md hover:bg-rose-50 text-xs">Remove</button>
+                        <div className="flex items-center justify-end gap-2">
+                          {p.delivery_status === 'ordered' && p.po_id && (
+                            <>
+                              <button 
+                                onClick={() => handleEditPO(p)} 
+                                className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                                title="Edit Order"
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </button>
+                              <button 
+                                onClick={() => handleCancelPO(p)} 
+                                disabled={loading}
+                                className="p-1.5 text-red-600 hover:bg-red-50 rounded-md transition-colors disabled:opacity-50"
+                                title="Cancel Order"
+                              >
+                                <XCircle className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
+                          {p.delivery_status === 'not_requested' && (
+                            <button 
+                              onClick={()=>setReorderPlan(plan=>{ const cp={...plan}; delete cp[p.id]; return cp; })} 
+                              className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-md transition-colors"
+                              title="Remove from list"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
                   {lowStockList.length===0 && (
                     <tr>
-                      <td colSpan={6} className="py-8 text-center text-gray-500">No items match your filters</td>
+                      <td colSpan={9} className="py-8 text-center text-gray-500">No items match your filters</td>
                     </tr>
                   )}
                 </tbody>
@@ -1544,6 +2122,204 @@ const InventoryManagement = () => {
           </div>
         </div>
       )}
+
+      {/* Add Product to Reorder Modal */}
+      {showAddToReorder && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-2xl max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-bold text-gray-900">Add Product to Reorder List</h3>
+              <button 
+                onClick={() => {
+                  setShowAddToReorder(false);
+                  setAddToReorderSearch('');
+                }} 
+                className="p-2 rounded-lg hover:bg-gray-100"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            
+            <div className="mb-4">
+              <input
+                type="text"
+                value={addToReorderSearch}
+                onChange={(e) => setAddToReorderSearch(e.target.value)}
+                placeholder="Search products by name, category, or location..."
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              />
+            </div>
+            
+            <div className="flex-1 overflow-y-auto mb-4 border border-gray-200 rounded-lg">
+              <div className="divide-y divide-gray-200">
+                {products
+                  .filter(p => {
+                    const searchTerm = addToReorderSearch.trim().toLowerCase();
+                    if (!searchTerm) return true;
+                    return [p.name, p.category_name, p.location]
+                      .filter(Boolean)
+                      .some(v => String(v).toLowerCase().includes(searchTerm));
+                  })
+                  .filter(p => {
+                    // Don't show products that are already in lowStockList
+                    return !lowStockList.some(lp => Number(lp.id) === Number(p.id));
+                  })
+                  .slice(0, 50) // Limit to 50 results for performance
+                  .map(product => {
+                    const current = Number(product.current_stock ?? 0);
+                    const reorderPoint = Number(product.reorder_point ?? 10);
+                    const suggested = Math.max(1, reorderPoint * 2 - current);
+                    const isInPlan = reorderPlan[product.id] !== undefined;
+                    
+                    return (
+                      <div 
+                        key={product.id} 
+                        className="p-3 hover:bg-gray-50 flex items-center justify-between"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-gray-900">{product.name}</div>
+                          <div className="text-sm text-gray-500">
+                            {product.category_name && <span>{product.category_name} • </span>}
+                            Stock: {current} • Reorder Point: {reorderPoint}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 ml-4">
+                          {isInPlan ? (
+                            <>
+                              <input
+                                type="number"
+                                min={1}
+                                value={reorderPlan[product.id]}
+                                onChange={(e) => {
+                                  const value = Number(e.target.value);
+                                  if (value >= 1) {
+                                    setReorderPlan(plan => ({ ...plan, [product.id]: value }));
+                                  }
+                                }}
+                                className="w-20 px-2 py-1 border border-gray-300 rounded-md text-sm"
+                              />
+                              <button
+                                onClick={() => {
+                                  setReorderPlan(plan => {
+                                    const newPlan = { ...plan };
+                                    delete newPlan[product.id];
+                                    return newPlan;
+                                  });
+                                }}
+                                className="px-2 py-1 text-xs border border-red-300 text-red-600 rounded-md hover:bg-red-50"
+                              >
+                                Remove
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setReorderPlan(plan => ({ ...plan, [product.id]: suggested }));
+                                setSelectedItems(prev => new Set([...prev, product.id]));
+                              }}
+                              className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 flex items-center gap-1.5"
+                            >
+                              <Plus className="w-4 h-4" />
+                              Add ({suggested})
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                {products.filter(p => {
+                  const searchTerm = addToReorderSearch.trim().toLowerCase();
+                  if (!searchTerm) return true;
+                  return [p.name, p.category_name, p.location]
+                    .filter(Boolean)
+                    .some(v => String(v).toLowerCase().includes(searchTerm));
+                }).filter(p => !lowStockList.some(lp => Number(lp.id) === Number(p.id))).length === 0 && (
+                  <div className="p-8 text-center text-gray-500">
+                    <Package className="w-12 h-12 mx-auto mb-2 text-gray-400" />
+                    <p>No products found</p>
+                    <p className="text-sm mt-1">All matching products are already in the reorder list</p>
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            <div className="flex items-center justify-end gap-2 pt-4 border-t border-gray-200">
+              <button
+                onClick={() => {
+                  setShowAddToReorder(false);
+                  setAddToReorderSearch('');
+                }}
+                className="px-4 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Supplier Selection Modal for Purchase Order */}
+      {showSupplierModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-bold text-gray-900">Select Supplier</h3>
+              <button 
+                onClick={() => {
+                  setShowSupplierModal(false);
+                  window._pendingPOItems = null;
+                }} 
+                className="p-2 rounded-lg hover:bg-gray-100"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            
+            <div className="mb-4">
+              <p className="text-sm text-gray-600 mb-4">
+                Select a supplier for this purchase order:
+              </p>
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {suppliers.filter(s => s.is_active !== false).map(supplier => (
+                  <button
+                    key={supplier.id}
+                    onClick={() => createPurchaseOrder(supplier.id)}
+                    className="w-full text-left p-3 border border-gray-300 rounded-lg hover:bg-indigo-50 hover:border-indigo-500 transition-colors"
+                  >
+                    <div className="font-medium text-gray-900">{supplier.name}</div>
+                    {supplier.phone && (
+                      <div className="text-sm text-gray-500">Phone: {supplier.phone}</div>
+                    )}
+                    {supplier.email && (
+                      <div className="text-sm text-gray-500">Email: {supplier.email}</div>
+                    )}
+                  </button>
+                ))}
+              </div>
+              {suppliers.filter(s => s.is_active !== false).length === 0 && (
+                <div className="text-center py-8 text-gray-500">
+                  <Building2 className="w-12 h-12 mx-auto mb-2 text-gray-400" />
+                  <p>No active suppliers found</p>
+                  <p className="text-sm mt-1">Please add suppliers first</p>
+                </div>
+              )}
+            </div>
+            
+            <div className="flex items-center justify-end gap-2 pt-4 border-t border-gray-200">
+              <button
+                onClick={() => {
+                  setShowSupplierModal(false);
+                  window._pendingPOItems = null;
+                }}
+                className="px-4 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Requests Tab */}
       {tab === 'requests' && (
         <div ref={requestsRef} className="bg-white rounded-xl shadow-sm border border-gray-200">
@@ -1617,7 +2393,12 @@ const InventoryManagement = () => {
                         <td className="py-3 pr-4 font-medium text-gray-900">{r.product_name}</td>
                         <td className={`py-3 pr-4 ${r.quantity_change < 0 ? 'text-rose-600' : 'text-emerald-700'} font-semibold`}>{r.quantity_change}</td>
                         <td className="py-3 pr-4">
-                          <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${r.status === 'pending' ? 'bg-amber-100 text-amber-700' : r.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{r.status}</span>
+                          <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
+                            r.status === 'pending' ? 'bg-amber-100 text-amber-700' : 
+                            r.status === 'approved' ? 'bg-blue-100 text-blue-700' : 
+                            r.status === 'delivered' ? 'bg-emerald-100 text-emerald-700' : 
+                            'bg-rose-100 text-rose-700'
+                          }`}>{r.status}</span>
                         </td>
                         <td className="py-3 pr-4">{(r.requested_by_first_name || r.requested_by_last_name) ? `${r.requested_by_first_name||''} ${r.requested_by_last_name||''}`.trim() : (r.requested_by_email || r.requested_by)}</td>
                         <td className="py-3 pr-4">{new Date(r.created_at).toLocaleString()}</td>
@@ -1868,6 +2649,598 @@ const InventoryManagement = () => {
         </div>
       )}
 
+      {/* Suppliers Tab */}
+      {tab === 'suppliers' && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+          <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-gray-900">Suppliers</h2>
+            <button
+              onClick={() => {
+                setSupplierForm({ name: '', contact_name: '', email: '', phone: '', address: '', lead_time_days: 7, is_active: true });
+                setSupplierFormErrors({});
+                setEditingSupplier(null);
+                setShowAddSupplier(true);
+              }}
+              className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 flex items-center gap-2"
+            >
+              <Plus className="w-4 h-4" />
+              Add Supplier
+            </button>
+          </div>
+          
+          {/* Filters */}
+          <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+              <div className="md:col-span-6">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Search Suppliers</label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
+                  <input 
+                    value={supplierSearch} 
+                    onChange={(e) => setSupplierSearch(e.target.value)} 
+                    placeholder="Search by name, contact, email, phone, address..." 
+                    className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white" 
+                  />
+                </div>
+              </div>
+              <div className="md:col-span-3">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                <div className="relative">
+                  <select 
+                    value={supplierStatusFilter} 
+                    onChange={(e) => setSupplierStatusFilter(e.target.value)} 
+                    className="w-full appearance-none px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white"
+                  >
+                    <option value="all">All Status</option>
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-gray-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+              </div>
+              <div className="md:col-span-3">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Items per page</label>
+                <div className="relative">
+                  <select 
+                    value={supplierPageSize} 
+                    onChange={(e) => {
+                      setSupplierPageSize(Number(e.target.value));
+                      setSupplierPage(1);
+                    }} 
+                    className="w-full appearance-none px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white"
+                  >
+                    {[10, 20, 50, 100].map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-gray-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="p-6">
+            {suppliers.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">
+                <Building2 className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                <p>No suppliers found</p>
+                <p className="text-sm mt-1">Click "Add Supplier" to create your first supplier</p>
+              </div>
+            ) : filteredSuppliers.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">
+                <Search className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                <p>No suppliers match your filters</p>
+                <p className="text-sm mt-1">Try adjusting your search or status filter</p>
+              </div>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-gray-600 bg-gray-50 border-b border-gray-200">
+                        <th className="py-3 px-4 font-semibold">Name</th>
+                        <th className="py-3 px-4 font-semibold">Contact</th>
+                        <th className="py-3 px-4 font-semibold">Email</th>
+                        <th className="py-3 px-4 font-semibold">Phone</th>
+                        <th className="py-3 px-4 font-semibold">Address</th>
+                        <th className="py-3 px-4 font-semibold">Lead Time</th>
+                        <th className="py-3 px-4 font-semibold">Status</th>
+                        <th className="py-3 px-4 font-semibold text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paginatedSuppliers.map(supplier => (
+                      <tr key={supplier.id} className="border-b border-gray-100 hover:bg-gray-50">
+                        <td className="py-3 px-4">
+                          <span className="font-medium text-gray-900">{supplier.name}</span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="text-gray-700">{supplier.contact_name || '—'}</span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="text-gray-700">{supplier.email || '—'}</span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="text-gray-700">{supplier.phone || '—'}</span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="text-gray-700">{supplier.address || '—'}</span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="text-gray-700">{supplier.lead_time_days || 7} days</span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            supplier.is_active !== false ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                          }`}>
+                            {supplier.is_active !== false ? 'Active' : 'Inactive'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => {
+                                setEditingSupplier(supplier);
+                                setSupplierForm({
+                                  name: supplier.name || '',
+                                  contact_name: supplier.contact_name || '',
+                                  email: supplier.email || '',
+                                  phone: supplier.phone || '',
+                                  address: supplier.address || '',
+                                  lead_time_days: supplier.lead_time_days || 7,
+                                  is_active: supplier.is_active !== false
+                                });
+                                setShowAddSupplier(true);
+                              }}
+                              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                              title="Edit Supplier"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={async () => {
+                                if (!window.confirm(`Are you sure you want to delete "${supplier.name}"?`)) return;
+                                try {
+                                  setLoading(true);
+                                  await ManagerAPI.deleteSupplier(supplier.id, token);
+                                  setSuccess('Supplier deleted successfully');
+                                  setTimeout(() => setSuccess(''), 2000);
+                                  await loadSuppliers();
+                                } catch (e) {
+                                  setError(e.message || 'Failed to delete supplier');
+                                } finally {
+                                  setLoading(false);
+                                }
+                              }}
+                              className="p-1.5 text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                              title="Delete Supplier"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                
+                {/* Pagination */}
+                {supplierTotalPages > 1 && (
+                  <div className="mt-6 flex items-center justify-between border-t border-gray-200 pt-4">
+                    <div className="text-sm text-gray-700">
+                      Showing <span className="font-medium">{supplierStartIndex + 1}</span> to{' '}
+                      <span className="font-medium">{supplierEndIndex}</span> of{' '}
+                      <span className="font-medium">{filteredSuppliers.length}</span> suppliers
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setSupplierPage(1)}
+                        disabled={supplierCurrentPage === 1}
+                        className={`px-3 py-1.5 rounded-md text-sm font-medium ${
+                          supplierCurrentPage === 1
+                            ? 'opacity-40 cursor-not-allowed text-gray-400'
+                            : 'text-gray-700 hover:bg-gray-100'
+                        }`}
+                      >
+                        First
+                      </button>
+                      <button
+                        onClick={() => setSupplierPage(p => Math.max(1, p - 1))}
+                        disabled={supplierCurrentPage === 1}
+                        className={`px-3 py-1.5 rounded-md text-sm font-medium ${
+                          supplierCurrentPage === 1
+                            ? 'opacity-40 cursor-not-allowed text-gray-400'
+                            : 'text-gray-700 hover:bg-gray-100'
+                        }`}
+                      >
+                        Previous
+                      </button>
+                      {Array.from({ length: Math.min(5, supplierTotalPages) }, (_, i) => {
+                        let pageNum;
+                        if (supplierTotalPages <= 5) {
+                          pageNum = i + 1;
+                        } else if (supplierCurrentPage <= 3) {
+                          pageNum = i + 1;
+                        } else if (supplierCurrentPage >= supplierTotalPages - 2) {
+                          pageNum = supplierTotalPages - 4 + i;
+                        } else {
+                          pageNum = supplierCurrentPage - 2 + i;
+                        }
+                        return (
+                          <button
+                            key={pageNum}
+                            onClick={() => setSupplierPage(pageNum)}
+                            className={`w-8 h-8 inline-flex items-center justify-center rounded-md text-sm font-medium ${
+                              supplierCurrentPage === pageNum
+                                ? 'bg-indigo-600 text-white'
+                                : 'text-gray-700 hover:bg-gray-100'
+                            }`}
+                          >
+                            {pageNum}
+                          </button>
+                        );
+                      })}
+                      <button
+                        onClick={() => setSupplierPage(p => Math.min(supplierTotalPages, p + 1))}
+                        disabled={supplierCurrentPage === supplierTotalPages}
+                        className={`px-3 py-1.5 rounded-md text-sm font-medium ${
+                          supplierCurrentPage === supplierTotalPages
+                            ? 'opacity-40 cursor-not-allowed text-gray-400'
+                            : 'text-gray-700 hover:bg-gray-100'
+                        }`}
+                      >
+                        Next
+                      </button>
+                      <button
+                        onClick={() => setSupplierPage(supplierTotalPages)}
+                        disabled={supplierCurrentPage === supplierTotalPages}
+                        className={`px-3 py-1.5 rounded-md text-sm font-medium ${
+                          supplierCurrentPage === supplierTotalPages
+                            ? 'opacity-40 cursor-not-allowed text-gray-400'
+                            : 'text-gray-700 hover:bg-gray-100'
+                        }`}
+                      >
+                        Last
+                      </button>
+                      <div className="flex items-center gap-2 ml-2 pl-2 border-l border-gray-200 text-sm text-gray-700">
+                        <span>Go to page:</span>
+                        <form
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            const n = parseInt(supplierPageInput, 10);
+                            if (!Number.isNaN(n)) {
+                              const clamped = Math.max(1, Math.min(supplierTotalPages, n));
+                              setSupplierPage(clamped);
+                            }
+                            setSupplierPageInput('');
+                          }}
+                          className="flex items-center gap-2"
+                        >
+                          <input
+                            type="number"
+                            min="1"
+                            max={supplierTotalPages}
+                            value={supplierPageInput}
+                            onChange={(e) => setSupplierPageInput(e.target.value)}
+                            placeholder={`${supplierCurrentPage}`}
+                            className="w-16 px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-center"
+                          />
+                          <span className="text-sm text-gray-600">of {supplierTotalPages}</span>
+                          <button
+                            type="submit"
+                            className="px-3 py-1.5 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 text-xs font-medium"
+                          >
+                            Go
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Add/Edit Supplier Modal */}
+      {showAddSupplier && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-bold text-gray-900">
+                {editingSupplier ? 'Edit Supplier' : 'Add Supplier'}
+              </h3>
+              <button 
+                onClick={() => {
+                  setShowAddSupplier(false);
+                  setEditingSupplier(null);
+                  setSupplierForm({ name: '', contact_name: '', email: '', phone: '', address: '', lead_time_days: 7, is_active: true });
+                  setSupplierFormErrors({});
+                }} 
+                className="p-2 rounded-lg hover:bg-gray-100"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              
+              // Validation
+              const errors = {};
+              
+              // Name validation
+              const nameTrimmed = supplierForm.name.trim();
+              if (!nameTrimmed) {
+                errors.name = 'Supplier name is required';
+              } else if (nameTrimmed.length < 2) {
+                errors.name = 'Supplier name must be at least 2 characters';
+              } else if (nameTrimmed.length > 100) {
+                errors.name = 'Supplier name must not exceed 100 characters';
+              }
+              
+              // Email validation
+              if (supplierForm.email && supplierForm.email.trim()) {
+                const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                if (!emailRegex.test(supplierForm.email.trim())) {
+                  errors.email = 'Please enter a valid email address';
+                } else if (supplierForm.email.trim().length > 255) {
+                  errors.email = 'Email must not exceed 255 characters';
+                }
+              }
+              
+              // Phone validation
+              if (supplierForm.phone && supplierForm.phone.trim()) {
+                const phoneRegex = /^[\d\s+()-]+$/;
+                const phoneClean = supplierForm.phone.trim().replace(/[\s-()]/g, '');
+                if (!phoneRegex.test(supplierForm.phone.trim())) {
+                  errors.phone = 'Please enter a valid phone number';
+                } else if (phoneClean.length < 7 || phoneClean.length > 15) {
+                  errors.phone = 'Phone number must be between 7 and 15 digits';
+                }
+              }
+              
+              // Contact name validation
+              if (supplierForm.contact_name && supplierForm.contact_name.trim()) {
+                if (supplierForm.contact_name.trim().length > 100) {
+                  errors.contact_name = 'Contact name must not exceed 100 characters';
+                }
+              }
+              
+              // Address validation
+              if (supplierForm.address && supplierForm.address.trim()) {
+                if (supplierForm.address.trim().length > 500) {
+                  errors.address = 'Address must not exceed 500 characters';
+                }
+              }
+              
+              // Lead time validation
+              if (!supplierForm.lead_time_days || supplierForm.lead_time_days < 1) {
+                errors.lead_time_days = 'Lead time must be at least 1 day';
+              } else if (supplierForm.lead_time_days > 365) {
+                errors.lead_time_days = 'Lead time must not exceed 365 days';
+              } else if (!Number.isInteger(supplierForm.lead_time_days)) {
+                errors.lead_time_days = 'Lead time must be a whole number';
+              }
+              
+              setSupplierFormErrors(errors);
+              
+              if (Object.keys(errors).length > 0) {
+                setError('Please fix the validation errors');
+                return;
+              }
+              
+              try {
+                setLoading(true);
+                setError('');
+                setSupplierFormErrors({});
+                
+                if (editingSupplier) {
+                  await ManagerAPI.updateSupplier(editingSupplier.id, supplierForm, token);
+                  setSuccess('Supplier updated successfully');
+                } else {
+                  await ManagerAPI.createSupplier(supplierForm, token);
+                  setSuccess('Supplier created successfully');
+                }
+                
+                setTimeout(() => setSuccess(''), 2000);
+                setShowAddSupplier(false);
+                setEditingSupplier(null);
+                setSupplierForm({ name: '', contact_name: '', email: '', phone: '', address: '', lead_time_days: 7, is_active: true });
+                setSupplierFormErrors({});
+                await loadSuppliers();
+              } catch (e) {
+                setError(e.message || 'Failed to save supplier');
+              } finally {
+                setLoading(false);
+              }
+            }} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
+                <input
+                  type="text"
+                  value={supplierForm.name}
+                  onChange={(e) => {
+                    setSupplierForm(f => ({ ...f, name: e.target.value }));
+                    if (supplierFormErrors.name) {
+                      setSupplierFormErrors(err => ({ ...err, name: '' }));
+                    }
+                  }}
+                  maxLength={100}
+                  className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent ${
+                    supplierFormErrors.name ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                  }`}
+                  required
+                />
+                {supplierFormErrors.name && (
+                  <p className="text-xs text-red-600 mt-1">{supplierFormErrors.name}</p>
+                )}
+                <p className="text-xs text-gray-500 mt-1">2-100 characters</p>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Contact Name</label>
+                <input
+                  type="text"
+                  value={supplierForm.contact_name}
+                  onChange={(e) => {
+                    setSupplierForm(f => ({ ...f, contact_name: e.target.value }));
+                    if (supplierFormErrors.contact_name) {
+                      setSupplierFormErrors(err => ({ ...err, contact_name: '' }));
+                    }
+                  }}
+                  maxLength={100}
+                  className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent ${
+                    supplierFormErrors.contact_name ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                  }`}
+                />
+                {supplierFormErrors.contact_name && (
+                  <p className="text-xs text-red-600 mt-1">{supplierFormErrors.contact_name}</p>
+                )}
+                <p className="text-xs text-gray-500 mt-1">Maximum 100 characters</p>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                  <input
+                    type="email"
+                    value={supplierForm.email}
+                    onChange={(e) => {
+                      setSupplierForm(f => ({ ...f, email: e.target.value }));
+                      if (supplierFormErrors.email) {
+                        setSupplierFormErrors(err => ({ ...err, email: '' }));
+                      }
+                    }}
+                    maxLength={255}
+                    className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent ${
+                      supplierFormErrors.email ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                    }`}
+                  />
+                  {supplierFormErrors.email && (
+                    <p className="text-xs text-red-600 mt-1">{supplierFormErrors.email}</p>
+                  )}
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+                  <input
+                    type="tel"
+                    value={supplierForm.phone}
+                    onChange={(e) => {
+                      setSupplierForm(f => ({ ...f, phone: e.target.value }));
+                      if (supplierFormErrors.phone) {
+                        setSupplierFormErrors(err => ({ ...err, phone: '' }));
+                      }
+                    }}
+                    maxLength={20}
+                    className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent ${
+                      supplierFormErrors.phone ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                    }`}
+                  />
+                  {supplierFormErrors.phone && (
+                    <p className="text-xs text-red-600 mt-1">{supplierFormErrors.phone}</p>
+                  )}
+                  <p className="text-xs text-gray-500 mt-1">7-15 digits</p>
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Address</label>
+                <textarea
+                  value={supplierForm.address}
+                  onChange={(e) => {
+                    setSupplierForm(f => ({ ...f, address: e.target.value }));
+                    if (supplierFormErrors.address) {
+                      setSupplierFormErrors(err => ({ ...err, address: '' }));
+                    }
+                  }}
+                  rows={2}
+                  maxLength={500}
+                  className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent ${
+                    supplierFormErrors.address ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                  }`}
+                />
+                {supplierFormErrors.address && (
+                  <p className="text-xs text-red-600 mt-1">{supplierFormErrors.address}</p>
+                )}
+                <p className="text-xs text-gray-500 mt-1">Maximum 500 characters</p>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Lead Time (days) *</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={supplierForm.lead_time_days || ''}
+                  onChange={(e) => {
+                    const value = e.target.value === '' ? 7 : Number(e.target.value);
+                    setSupplierForm(f => ({ ...f, lead_time_days: isNaN(value) ? 7 : value }));
+                    if (supplierFormErrors.lead_time_days) {
+                      setSupplierFormErrors(err => ({ ...err, lead_time_days: '' }));
+                    }
+                  }}
+                  onBlur={(e) => {
+                    const value = e.target.value === '' ? 7 : Number(e.target.value);
+                    if (isNaN(value) || value < 1) {
+                      setSupplierForm(f => ({ ...f, lead_time_days: 7 }));
+                    } else if (value > 365) {
+                      setSupplierForm(f => ({ ...f, lead_time_days: 365 }));
+                    }
+                  }}
+                  className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent ${
+                    supplierFormErrors.lead_time_days ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                  }`}
+                  required
+                />
+                {supplierFormErrors.lead_time_days && (
+                  <p className="text-xs text-red-600 mt-1">{supplierFormErrors.lead_time_days}</p>
+                )}
+                <p className="text-xs text-gray-500 mt-1">1-365 days</p>
+              </div>
+              
+              {editingSupplier && (
+                <div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={supplierForm.is_active !== false}
+                      onChange={(e) => setSupplierForm(f => ({ ...f, is_active: e.target.checked }))}
+                      className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
+                    />
+                    <span className="text-sm font-medium text-gray-700">Active</span>
+                  </label>
+                </div>
+              )}
+              
+              <div className="flex items-center justify-end gap-2 pt-4 border-t border-gray-200">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAddSupplier(false);
+                    setEditingSupplier(null);
+                    setSupplierForm({ name: '', contact_name: '', email: '', phone: '', address: '', lead_time_days: 7, is_active: true });
+                    setSupplierFormErrors({});
+                  }}
+                  className="px-4 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-2"
+                >
+                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                  {editingSupplier ? 'Update' : 'Create'} Supplier
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Deliveries Modal */}
       {deliveriesOpen && deliveryTarget && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -1942,14 +3315,22 @@ const InventoryManagement = () => {
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-700 mb-1">Supplier Name</label>
-                  <input 
-                    type="text"
-                    value={deliveryForm.supplier_name} 
-                    onChange={(e)=>setDeliveryForm(f=>({...f,supplier_name:e.target.value}))} 
-                    placeholder="Enter supplier name"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Will create new supplier if not found</p>
+                  <div className="relative">
+                    <select
+                      value={deliveryForm.supplier_name} 
+                      onChange={(e)=>setDeliveryForm(f=>({...f,supplier_name:e.target.value}))} 
+                      className="w-full appearance-none px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent pr-8 bg-white"
+                    >
+                      <option value="">Select supplier</option>
+                      {suppliers.filter(s => s.is_active !== false).map(supplier => (
+                        <option key={supplier.id} value={supplier.name}>
+                          {supplier.name}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-gray-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">Select from existing suppliers</p>
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-700 mb-1">Cost Price</label>
@@ -2024,7 +3405,9 @@ const InventoryManagement = () => {
               <table className="min-w-full text-sm">
                 <thead>
                   <tr className="text-left text-gray-600 bg-gray-50">
-                    <th className="py-3 px-4">Quantity</th>
+                    <th className="py-3 px-4">Delivered</th>
+                    <th className="py-3 px-4">Sold</th>
+                    <th className="py-3 px-4">Available</th>
                     <th className="py-3 px-4">Expiration Date</th>
                     <th className="py-3 px-4">Delivery Date</th>
                     <th className="py-3 px-4">Supplier</th>
@@ -2038,7 +3421,7 @@ const InventoryManagement = () => {
                     
                     return (
                       <tr key={delivery.id} className={`border-t border-gray-100 hover:bg-gray-50 ${isEditing ? 'bg-blue-50' : ''}`}>
-                        {/* Quantity */}
+                        {/* Delivered Quantity (excluding disposed) */}
                         <td className="py-3 px-4">
                           {isEditing ? (
                             <input 
@@ -2049,8 +3432,30 @@ const InventoryManagement = () => {
                               className="w-20 px-2 py-1 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                             />
                           ) : (
-                            <span className="font-medium">{delivery.quantity}</span>
+                            <span className="font-medium">
+                              {delivery.delivered_quantity !== undefined 
+                                ? delivery.delivered_quantity 
+                                : (delivery.quantity || 0) - (delivery.disposed_quantity || 0)}
+                            </span>
                           )}
+                        </td>
+                        
+                        {/* Sold Quantity */}
+                        <td className="py-3 px-4">
+                          <span className="font-medium text-red-600">{delivery.sold_quantity || 0}</span>
+                        </td>
+                        
+                        {/* Available Quantity */}
+                        <td className="py-3 px-4">
+                          {(() => {
+                            const isExpired = delivery.expiration_date && new Date(delivery.expiration_date) <= new Date();
+                            const available = isExpired ? 0 : (delivery.available_quantity ?? ((delivery.quantity || 0) - (delivery.sold_quantity || 0)));
+                            return (
+                              <span className={`font-medium ${isExpired ? 'text-gray-400 line-through' : 'text-emerald-600'}`}>
+                                {available}
+                              </span>
+                            );
+                          })()}
                         </td>
                         
                         {/* Expiration Date */}

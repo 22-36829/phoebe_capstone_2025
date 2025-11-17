@@ -10,12 +10,40 @@ import {
   ChevronDown,
   ChevronUp
 } from 'lucide-react';
+import { ManagerAPI } from '../../services/api';
 
 // Get API base URL - use same pattern as api.js
 const getApiBase = () => {
   // In production, REACT_APP_API_BASE should be set to Railway URL
   // In development, empty string uses proxy
   return process.env.REACT_APP_API_BASE || '';
+};
+
+const DEFAULT_TUTORIAL_EXAMPLES = {
+  search: [
+    'Find Amlodipine 5mg tablets',
+    'Show me Biogesic tablets',
+    'What blood pressure medicines do you have?',
+    'Medicine for headache'
+  ],
+  inventory: [
+    'Show me out of stock items',
+    'Show low quantity medicines',
+    'Check Amlodipine 5mg stock',
+    'Show inventory summary'
+  ],
+  locator: [
+    'Where is Aspilets 80MG located?',
+    'Find Ceelin Syrup 60ML',
+    'Locate blood pressure medicines',
+    'Where are the vitamins?'
+  ],
+  info: [
+    'What is Amlodipine 5MG used for?',
+    'Benefits of Ceelin Drops',
+    'How to use Catapres 75MG?',
+    'What is Aspilets 80MG for?'
+  ]
 };
 
 const AIAssistant = () => {
@@ -34,6 +62,7 @@ const AIAssistant = () => {
   const [expandedSections, setExpandedSections] = useState({});
   const [lastSearchMessage, setLastSearchMessage] = useState('');
   const [showInfoModal, setShowInfoModal] = useState(false);
+  const [tutorialExamples, setTutorialExamples] = useState(DEFAULT_TUTORIAL_EXAMPLES);
   const messagesEndRef = useRef(null);
 
   const ADVANCED_COMMANDS = ['show more', 'show all', 'show 5', 'show 10'];
@@ -53,6 +82,45 @@ const AIAssistant = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    const fetchTutorialExamples = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        if (!token) return;
+        const response = await ManagerAPI.listProductsByStatus('active', token);
+
+        if (!response?.success || !Array.isArray(response.products) || !response.products.length) {
+          return;
+        }
+
+        const products = response.products.filter((product) => product?.name);
+
+        if (!products.length) {
+          return;
+        }
+
+        const uniqueNames = Array.from(new Set(products.map((product) => product.name))).slice(0, 6);
+        const locationReady = products.filter((product) => product.location).slice(0, 4);
+
+        const formatOrFallback = (items, fallback, formatter) =>
+          items.length ? items.map(formatter) : fallback;
+
+        setTutorialExamples({
+          search: formatOrFallback(uniqueNames.slice(0, 4), DEFAULT_TUTORIAL_EXAMPLES.search, (name) => `Find ${name}`),
+          inventory: formatOrFallback(uniqueNames.slice(0, 4), DEFAULT_TUTORIAL_EXAMPLES.inventory, (name) => `Check ${name} stock levels`),
+          locator: locationReady.length
+            ? locationReady.map((product) => `Where is ${product.name} (${product.location}) located?`)
+            : DEFAULT_TUTORIAL_EXAMPLES.locator,
+          info: formatOrFallback(uniqueNames.slice(0, 4), DEFAULT_TUTORIAL_EXAMPLES.info, (name) => `What is ${name} used for?`)
+        });
+      } catch (error) {
+        console.error('Unable to load live tutorial medicine names', error);
+      }
+    };
+
+    fetchTutorialExamples();
+  }, []);
 
   const handleSendMessage = async (messageOverride) => {
     const rawMessage = typeof messageOverride === 'string' ? messageOverride : inputMessage;
@@ -271,10 +339,13 @@ const AIAssistant = () => {
   };
 
   const toggleSection = (sectionIndex) => {
-    setExpandedSections(prev => ({
-      ...prev,
-      [sectionIndex]: !prev[sectionIndex]
-    }));
+    setExpandedSections(prev => {
+      const isCurrentlyOpen = !!prev[sectionIndex];
+      if (isCurrentlyOpen) {
+        return {};
+      }
+      return { [sectionIndex]: true };
+    });
   };
 
   const handleExampleClick = (example) => {
@@ -289,12 +360,7 @@ const AIAssistant = () => {
       description: 'Ask about medicines by name, type, or symptoms',
       icon: Search,
       color: 'bg-blue-500',
-      examples: [
-        'Find Amlodipine 5mg tablets',
-        'Show me Biogesic tablets',
-        'What blood pressure medicines do you have?',
-        'Medicine for headache'
-      ],
+      examples: tutorialExamples.search,
       tip: 'Use specific medicine names for best results!'
     },
     {
@@ -303,12 +369,7 @@ const AIAssistant = () => {
       description: 'Check stock levels and availability',
       icon: Package,
       color: 'bg-green-500',
-      examples: [
-        'Show me out of stock items',
-        'Show low quantity medicines',
-        'Check Amlodipine 5mg stock',
-        'Show inventory summary'
-      ],
+      examples: tutorialExamples.inventory,
       tip: 'Ask "show more" or "show less" to control results!'
     },
     {
@@ -317,12 +378,7 @@ const AIAssistant = () => {
       description: 'Find where products are located',
       icon: MapPin,
       color: 'bg-orange-500',
-      examples: [
-        'Where is Aspilets 80MG located?',
-        'Find Ceelin Syrup 60ML',
-        'Locate blood pressure medicines',
-        'Where are the vitamins?'
-      ],
+      examples: tutorialExamples.locator,
       tip: 'I know your pharmacy layout!'
     },
     {
@@ -331,12 +387,7 @@ const AIAssistant = () => {
       description: 'Learn about uses, benefits, and side effects',
       icon: Info,
       color: 'bg-indigo-500',
-      examples: [
-        'What is Amlodipine 5MG used for?',
-        'Benefits of Ceelin Drops',
-        'How to use Catapres 75MG?',
-        'What is Aspilets 80MG for?'
-      ],
+      examples: tutorialExamples.info,
       tip: 'I can explain medical information clearly!'
     },
     {

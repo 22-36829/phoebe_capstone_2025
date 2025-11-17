@@ -143,6 +143,51 @@ DEFAULT_SYNONYM_CONFIG = {
     "keyword_overrides": {}
 }
 
+DOSAGE_FORM_WORDS = {
+    'tablet', 'tablets', 'tab', 'tabs',
+    'capsule', 'capsules', 'cap', 'caps',
+    'syrup', 'suspension', 'drop', 'drops',
+    'ampule', 'ampules', 'vial', 'vials',
+    'solution', 'cream', 'ointment', 'gel',
+    'patch', 'kit', 'powder', 'sachet',
+    'bottle', 'lozenge'
+}
+
+CATEGORY_USE_MAP = {
+    'antibiotics': "Bacterial infections, pneumonia, bronchitis, skin infections, UTI, sinusitis",
+    'pain_relief': "Headache, fever, muscle pain, arthritis, toothache, menstrual cramps, common cold symptoms",
+    'vitamins': "Nutritional deficiency, immune support, energy boost, general wellness",
+    'antihistamines': "Allergic rhinitis, hay fever, hives, itching, sneezing, runny nose",
+    'antacids': "Heartburn, acid reflux, stomach ulcers, indigestion, GERD",
+    'cough_medicine': "Dry cough, productive cough, chest congestion, mucus clearance",
+    'diabetes': "Type 2 diabetes, blood sugar control, diabetic complications prevention",
+    'blood_pressure': "Hypertension, heart failure, stroke prevention, kidney protection",
+    'respiratory': "Asthma, COPD, bronchospasm, breathing difficulties, airway inflammation",
+    'antifungal': "Fungal infections of the skin, nails, or mucous membranes",
+    'supplements': "Joint pain, heart health, digestive health, immune support, inflammation"
+}
+
+CATEGORY_BENEFIT_MAP = {
+    'antibiotics': "Prevents infection spread, promotes healing, reduces complications, improves recovery time",
+    'pain_relief': "Improves comfort, reduces fever, enhances daily activities, better sleep quality",
+    'vitamins': "Enhanced immunity, increased energy, better skin health, improved metabolism",
+    'antihistamines': "Improved breathing, better sleep, reduced discomfort, enhanced daily activities",
+    'antacids': "Better digestion, reduced discomfort, improved sleep, prevents esophageal damage",
+    'cough_medicine': "Better sleep, improved breathing, reduced throat irritation, faster recovery",
+    'diabetes': "Better blood sugar control, reduced complications, improved energy, enhanced quality of life",
+    'blood_pressure': "Reduced heart attack risk, stroke prevention, kidney protection, improved longevity",
+    'respiratory': "Improved breathing, better exercise tolerance, reduced emergency visits, enhanced daily life",
+    'antifungal': "Relieves itching, clears infection, prevents spread to other areas",
+    'supplements': "Improved joint mobility, heart health, digestive wellness, enhanced immunity, reduced inflammation"
+}
+
+
+def strip_dosage_form_terms(text: str) -> str:
+    """Remove dosage form descriptors (tablet, capsule, etc.) for cleaner matching."""
+    tokens = [token for token in text.split() if token and token not in DOSAGE_FORM_WORDS]
+    sanitized = ' '.join(tokens).strip()
+    return sanitized or text
+
 class EnhancedAIService:
     """Enhanced AI service with direct CSV data integration"""
     
@@ -159,6 +204,8 @@ class EnhancedAIService:
             Path(__file__).resolve().parent.parent / 'config' / 'ai_synonyms.json'
         ))
         self._synonym_config_mtime: Optional[float] = None
+        self.category_use_map = CATEGORY_USE_MAP
+        self.category_benefit_map = CATEGORY_BENEFIT_MAP
         
         # Database connection for live data
         if use_database:
@@ -417,6 +464,10 @@ class EnhancedAIService:
             return "Joint pain, heart health, digestive health, immune support, inflammation"
         
         else:
+            for category in self.classify_medicine(medicine_name):
+                mapped_uses = self.category_use_map.get(category)
+                if mapped_uses:
+                    return mapped_uses
             return "Consult healthcare provider for specific medical uses"
     
     def get_medicine_benefits(self, medicine_name: str) -> str:
@@ -474,6 +525,10 @@ class EnhancedAIService:
             return "Improved joint mobility, heart health, digestive wellness, enhanced immunity, reduced inflammation"
         
         else:
+            for category in self.classify_medicine(medicine_name):
+                mapped_benefits = self.category_benefit_map.get(category)
+                if mapped_benefits:
+                    return mapped_benefits
             return "Consult healthcare provider for specific health benefits"
     
     def classify_query(self, query: str) -> List[str]:
@@ -609,7 +664,8 @@ class EnhancedAIService:
             if start_idx > len('where is ') - 1 and end_idx > start_idx:
                 query_lower = query_lower[start_idx:end_idx].strip()
         
-        return query_lower
+        normalized = strip_dosage_form_terms(query_lower)
+        return normalized
     
     def search_medicines(self, query: str, limit: int = 50) -> Dict:
         """Search medicines using multiple strategies with improved accuracy"""
@@ -685,8 +741,8 @@ class EnhancedAIService:
         
         # Strategy 3: Word-by-word exact matching using extracted medicine name (medium-high priority)
         word_matches = []
-        medicine_words = medicine_name.split()
-        query_words = query_lower.split()
+        medicine_words = [word for word in medicine_name.split() if word not in DOSAGE_FORM_WORDS]
+        query_words = [word for word in query_lower.split() if word not in DOSAGE_FORM_WORDS]
         
         for name, data in self.medicine_database.items():
             name_lower = name.lower()
@@ -765,14 +821,14 @@ class EnhancedAIService:
                     category_matches.append(data)
         
         # Strategy 6: Keyword search (only if no direct matches)
-        keyword_matches = []
+        legacy_keyword_matches: List[Dict[str, Any]] = []
         if not exact_matches and not direct_matches and not word_matches:
             for name, data in self.medicine_database.items():
                 name_lower = name.lower()
-                query_words = query_lower.split()
+                query_words_split = query_lower.split()
                 # Check if any significant query words are in the medicine name
-                if any(word in name_lower for word in query_words if len(word) > 3):
-                    keyword_matches.append(data)
+                if any(word in name_lower for word in query_words_split if len(word) > 3):
+                    legacy_keyword_matches.append(data)
         
         # Strategy 7: Fuzzy matching (only if no strong direct matches)
         fuzzy_matches = []
@@ -838,7 +894,7 @@ class EnhancedAIService:
             exact_matches
             + direct_matches
             + word_matches
-            + keyword_matches
+            + legacy_keyword_matches
             + brand_matches
             + synonym_matches
             + inventory_matches
@@ -892,8 +948,20 @@ class EnhancedAIService:
         
         unique_results.sort(key=sort_key)
         
-        # Determine categories for response
-        query_categories = self.classify_query(query) if not exact_matches and not direct_matches else []
+        prioritized_categories = [
+            cat for cat in query_categories
+            if cat not in ('out_of_stock', 'available_items', 'low_stock', 'stock_report', 'others')
+        ]
+        final_results = unique_results
+        if prioritized_categories and not has_strong_direct:
+            category_filtered_results = [
+                item for item in unique_results
+                if any(cat in (item.get('ai_categories') or []) for cat in prioritized_categories)
+            ]
+            if category_filtered_results:
+                final_results = category_filtered_results
+
+        detected_categories = query_categories if (not has_strong_direct and query_categories) else []
         
         return {
             'query': query,
@@ -907,9 +975,9 @@ class EnhancedAIService:
             'keyword_matches': keyword_matches[:10],
             'fuzzy_matches': fuzzy_matches[:10],
             'semantic_matches': semantic_matches[:10],
-            'unique_results': unique_results,
-            'total_matches': len(unique_results),
-            'detected_categories': query_categories
+            'unique_results': final_results,
+            'total_matches': len(final_results),
+            'detected_categories': detected_categories
         }
     
     def get_recommendations(self, condition: str) -> List[Dict]:
